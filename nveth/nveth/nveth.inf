@@ -1,0 +1,60 @@
+[Version]
+Signature = "$WINDOWS NT$"
+Class = Net
+ClassGuid = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider = %ManufacturerName%
+CatalogFile = nveth.cat
+PnpLockDown = 1
+
+[SourceDisksNames]
+1 = %DiskName% ; DIRID_SRCPATH
+
+[SourceDisksFiles]
+nveth.sys = 1
+
+[DestinationDirs]
+DefaultDestDir = 12 ; DIRID_DRIVERS
+
+[Manufacturer]
+%ManufacturerName% = Standard, NT$ARCH$
+
+[Standard.NT$ARCH$]
+%NVEth.DeviceDesc% = Standard.Install, NVEth
+
+[Standard.Install]
+Characteristics = 0x1 ; NCF_VIRTUAL
+*IfType = 6 ; IF_TYPE_ETHERNET_CSMACD
+*MediaType = 0 ; NdisMedium802_3
+*PhysicalMediaType = 0 ; NdisPhysicalMediumUnspecified
+*IfConnectorPresent = 0 ; FALSE
+*ConnectionType = 1 ; NET_IF_CONNECTION_DEDICATED
+*DirectionType = 0 ; NET_IF_DIRECTION_SENDRECEIVE
+*AccessType = 2 ; NET_IF_ACCESS_BROADCAST
+*HardwareLoopback = 0 ; FALSE
+CopyFiles = @nveth.sys
+AddReg = Standard.Registry
+
+[Standard.Install.Services]
+AddService = NVEth, 0x00000002, Standard.Service ; SPSVCINST_ASSOCSERVICE
+
+[Standard.Install.Wdf]
+KmdfService = NVEth, Standard.Wdf
+
+[Standard.Registry]
+HKR, Ndi,            Service,    0, NVEth
+HKR, Ndi\Interfaces, UpperRange, 0, ndis5
+HKR, Ndi\Interfaces, LowerRange, 0, ethernet
+
+[Standard.Service]
+ServiceType = 0x00000001 ; SERVICE_KERNEL_DRIVER
+StartType = 0x00000003 ; SERVICE_DEMAND_START
+ErrorControl = 0x00000001 ; SERVICE_ERROR_NORMAL
+ServiceBinary = %12%\nveth.sys
+
+[Standard.Wdf]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+ManufacturerName = "NextTurn"
+DiskName = "NextTurn Virtual Ethernet Adapter"
+NVEth.DeviceDesc = "NextTurn Virtual Ethernet Adapter"
