@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use core::{
     mem::{self, MaybeUninit},
     ptr, slice,
@@ -8,8 +10,9 @@ use sal::*;
 
 use crate::{
     adapter::VEthFrame,
-    net::{EthFrameHeader, MacAddr},
+    net::EthHeader,
     os::thread::Thread,
+    peer::Peer,
     socket::{IoRequest, UdpSocket, UdpSocketWorker},
     windows::{
         km::{
@@ -17,7 +20,6 @@ use crate::{
             wsk::WSK_BUF,
         },
         prelude as win,
-        shared::{ntdef::NTSTATUS, ws2ipdef::SOCKADDR_IN6},
     },
     worker::{Worker, WorkerState},
 };
@@ -39,9 +41,8 @@ impl VEthTxQueue {
         tx_queue: win::NETPACKETQUEUE,
         socket: &'static UdpSocket,
         request: &'static mut IoRequest,
-        remote_addr: &'static SOCKADDR_IN6,
-        remote_mac_addr: &'static Option<MacAddr>,
-    ) -> Result<&'a mut Self, NTSTATUS> {
+        peers: &'static Vec<Peer>,
+    ) -> Result<&'a mut Self, win::NTSTATUS> {
         unsafe {
             let uninit = Self::from_queue_mut_ptr(tx_queue);
 
@@ -69,8 +70,7 @@ impl VEthTxQueue {
                 init,
                 socket,
                 request,
-                remote_addr,
-                remote_mac_addr,
+                peers,
                 state,
             );
 
@@ -136,8 +136,7 @@ struct VEthTxWorker<'a> {
 
     notify: &'a AtomicBool,
 
-    remote_addr: &'a SOCKADDR_IN6,
-    remote_mac_addr: &'a Option<MacAddr>,
+    peers: &'a Vec<Peer>,
 
     state: &'a mut WorkerState,
 
@@ -151,8 +150,7 @@ impl<'a> VEthTxWorker<'a> {
         tx: &'a VEthTxQueue,
         socket: &'a UdpSocket,
         request: &'a mut IoRequest,
-        remote_addr: &'a SOCKADDR_IN6,
-        remote_mac_addr: &'a Option<MacAddr>,
+        peers: &'a Vec<Peer>,
         state: &'a mut WorkerState,
     ) {
         ptr::raw_mut!((*uninit).socket).write(UdpSocketWorker::new(socket, request));
@@ -163,8 +161,7 @@ impl<'a> VEthTxWorker<'a> {
 
         ptr::raw_mut!((*uninit).notify).write(&tx.notify);
 
-        ptr::raw_mut!((*uninit).remote_addr).write(remote_addr);
-        ptr::raw_mut!((*uninit).remote_mac_addr).write(remote_mac_addr);
+        ptr::raw_mut!((*uninit).peers).write(peers);
 
         ptr::raw_mut!((*uninit).state).write(state);
     }
@@ -201,14 +198,12 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                         fragment_index,
                     )
                 };
+                let virtual_address = virtual_address.virtual_address;
                 let length = fragment.valid_length() as _;
                 unsafe {
                     tx.frame.data[frame_offset..frame_offset + length].copy_from_slice(
                         slice::from_raw_parts(
-                            virtual_address
-                                .virtual_address
-                                .cast::<u8>()
-                                .offset(fragment.offset() as _),
+                            virtual_address.offset(fragment.offset() as _),
                             length,
                         ),
                     )
@@ -216,36 +211,45 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                 frame_offset += length;
                 fragment_index = unsafe { win::NetRingIncrementIndex(fragments, fragment_index) };
             }
-            if frame_offset >= mem::size_of::<EthFrameHeader>() && {
-                let eth = unsafe { &*tx.frame.data.as_ptr().cast::<EthFrameHeader>() };
-                let dst_addr = eth.dst_addr();
-                dst_addr.is_broadcast()
-                    || if let Some(remote_mac_addr) = tx.remote_mac_addr {
-                        dst_addr == remote_mac_addr
-                    } else {
-                        false
-                    }
-            } {
-                unsafe {
-                    MmInitializeMdl(
-                        ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl),
-                        tx.frame.data.as_mut_ptr().cast(),
-                        frame_offset,
-                    )
-                };
-                unsafe { MmBuildMdlForNonPagedPool(ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl)) };
-                let buf = WSK_BUF {
-                    mdl: unsafe { &mut tx.mdl.assume_init_mut().mdl },
-                    offset: 0,
-                    length: frame_offset,
-                };
-                match tx.socket.send_to(&buf, &tx.remote_addr) {
+            unsafe {
+                MmInitializeMdl(
+                    ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl),
+                    tx.frame.data.as_mut_ptr().cast(),
+                    frame_offset,
+                )
+            };
+            unsafe { MmBuildMdlForNonPagedPool(ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl)) };
+            let buf = WSK_BUF {
+                mdl: unsafe { &mut tx.mdl.assume_init_mut().mdl },
+                offset: 0,
+                length: frame_offset,
+            };
+            let socket = &mut tx.socket;
+            let mut send_to = |addr| {
+                match socket.send_to(&buf, addr) {
                     Err(_status) => {
                         // TODO
                     }
                     Ok(sent) => {
                         trace_println!("<-- %u", sent);
                     }
+                }
+            };
+            if frame_offset >= mem::size_of::<EthHeader>() {
+                let eth = unsafe { &*tx.frame.data.as_ptr().cast::<EthHeader>() };
+                let dst = eth.dst();
+                if dst.is_multicast() {
+                    if dst.is_broadcast() {
+                        tx.peers.iter().for_each(|peer| send_to(&peer.socket_addr));
+                    }
+                } else if let Some(peer) = tx.peers.iter().find(|peer| {
+                    if let Some(addr) = peer.mac_addr.read().as_ref() {
+                        dst == addr
+                    } else {
+                        false
+                    }
+                }) {
+                    send_to(&peer.socket_addr);
                 }
             }
             packets.next_index = unsafe { win::NetRingIncrementIndex(packets, packet_index) };

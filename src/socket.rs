@@ -10,21 +10,13 @@ use crate::{
     init::{InitGuard, ManuallyInit},
     os::event::AutoEvent,
     windows::{
-        km::{
-            wdm::{
-                IoAllocateIrp, IoCancelIrp, IoFreeIrp, IoReuseIrp, IoSetCompletionRoutine,
-                DEVICE_OBJECT, IRP,
-            },
-            wsk as win,
-        },
+        prelude as win,
         shared::{
             ntdef::{NTSTATUS, NT_SUCCESS, PVOID},
             ntstatus::{
                 STATUS_CANCELLED, STATUS_INSUFFICIENT_RESOURCES, STATUS_MORE_PROCESSING_REQUIRED,
                 STATUS_PENDING, STATUS_SUCCESS,
             },
-            ws2def::{AF_INET6, IPPROTO, SOCK_DGRAM},
-            ws2ipdef::SOCKADDR_IN6,
         },
     },
 };
@@ -95,9 +87,9 @@ impl UdpSocket {
             let wsk_socket = dispatch.wsk_socket.unwrap();
             let status = wsk_socket(
                 provider_npi.client,
-                AF_INET6,
-                SOCK_DGRAM,
-                IPPROTO::IPPROTO_UDP,
+                win::AF_INET6,
+                win::SOCK_DGRAM,
+                win::IPPROTO::IPPROTO_UDP,
                 win::WSK_FLAG_DATAGRAM_SOCKET,
                 ptr::null_mut(),
                 ptr::null(),
@@ -134,7 +126,7 @@ impl UdpSocket {
         &mut self,
         request: &mut IoRequest,
         option: u32,
-        level: IPPROTO,
+        level: win::IPPROTO,
         value: bool,
     ) -> Result<(), NTSTATUS> {
         let value: u32 = if value { 1 } else { 0 };
@@ -160,7 +152,11 @@ impl UdpSocket {
         }
     }
 
-    pub fn bind(&mut self, request: &mut IoRequest, addr: &SOCKADDR_IN6) -> Result<(), NTSTATUS> {
+    pub fn bind(
+        &mut self,
+        request: &mut IoRequest,
+        addr: &win::SOCKADDR_IN6,
+    ) -> Result<(), NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_bind = dispatch.wsk_bind.unwrap();
         let status = wsk_bind(self.0, addr.as_ptr().cast(), 0, request.reuse()?);
@@ -176,7 +172,7 @@ impl UdpSocket {
         &self,
         request: &mut IoRequest,
         buf: &win::WSK_BUF,
-        addr: &SOCKADDR_IN6,
+        addr: &win::SOCKADDR_IN6,
     ) -> Result<usize, NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_send_to = dispatch.wsk_send_to.unwrap();
@@ -202,7 +198,7 @@ impl UdpSocket {
         &self,
         request: &mut IoRequest,
         buf: &win::WSK_BUF,
-        addr: &mut MaybeUninit<SOCKADDR_IN6>,
+        addr: &mut MaybeUninit<win::SOCKADDR_IN6>,
     ) -> Result<usize, NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_receive_from = dispatch.wsk_receive_from.unwrap();
@@ -271,21 +267,25 @@ impl<'a> UdpSocketWorker<'a> {
         Self { socket, request }
     }
 
-    pub fn send_to(&mut self, buf: &win::WSK_BUF, addr: &SOCKADDR_IN6) -> Result<usize, NTSTATUS> {
+    pub fn send_to(
+        &mut self,
+        buf: &win::WSK_BUF,
+        addr: &win::SOCKADDR_IN6,
+    ) -> Result<usize, NTSTATUS> {
         self.socket.send_to(&mut self.request, buf, addr)
     }
 
     pub fn recv_from(
         &mut self,
         buf: &win::WSK_BUF,
-        addr: &mut MaybeUninit<SOCKADDR_IN6>,
+        addr: &mut MaybeUninit<win::SOCKADDR_IN6>,
     ) -> Result<usize, NTSTATUS> {
         self.socket.recv_from(&mut self.request, buf, addr)
     }
 }
 
 pub struct IoRequest {
-    irp: *mut IRP,
+    irp: *mut win::IRP,
     event: AutoEvent,
     pending: bool,
     canceled: AtomicBool,
@@ -293,7 +293,7 @@ pub struct IoRequest {
 
 impl IoRequest {
     pub unsafe fn init(uninit: *mut Self) -> Result<InitGuard<Self>, NTSTATUS> {
-        let irp = IoAllocateIrp(1, false);
+        let irp = win::IoAllocateIrp(1, false);
         if irp.is_null() {
             Err(STATUS_INSUFFICIENT_RESOURCES)
         } else {
@@ -305,15 +305,15 @@ impl IoRequest {
         }
     }
 
-    fn reuse(&mut self) -> Result<*mut IRP, NTSTATUS> {
+    fn reuse(&mut self) -> Result<*mut win::IRP, NTSTATUS> {
         if self.canceled.load(Relaxed) {
             return Err(STATUS_CANCELLED);
         }
 
         assert!(!self.pending);
-        unsafe { IoReuseIrp(self.irp, STATUS_SUCCESS) };
+        unsafe { win::IoReuseIrp(self.irp, STATUS_SUCCESS) };
         unsafe {
-            IoSetCompletionRoutine(
+            win::IoSetCompletionRoutine(
                 self.irp,
                 Some(Self::complete),
                 self.as_mut_ptr().cast(),
@@ -349,12 +349,12 @@ impl IoRequest {
         self.canceled.store(true, Relaxed);
 
         // CAUTION: It seems safe to cancel a completed IRP.
-        unsafe { IoCancelIrp(self.irp) };
+        unsafe { win::IoCancelIrp(self.irp) };
     }
 
     extern "system" fn complete(
-        _device_object: *const DEVICE_OBJECT,
-        _irp: *const IRP,
+        _device_object: *const win::DEVICE_OBJECT,
+        _irp: *const win::IRP,
         context: PVOID,
     ) -> NTSTATUS {
         let request = unsafe { context.cast::<Self>().as_ref().unwrap() };
@@ -367,6 +367,6 @@ impl IoRequest {
 impl Drop for IoRequest {
     fn drop(&mut self) {
         assert!(!self.pending);
-        unsafe { IoFreeIrp(self.irp) }
+        unsafe { win::IoFreeIrp(self.irp) }
     }
 }

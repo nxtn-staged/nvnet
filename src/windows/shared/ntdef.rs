@@ -14,7 +14,7 @@ impl Default for HANDLE {
 }
 
 c_type!(
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct NTSTATUS(pub i32);
 );
 

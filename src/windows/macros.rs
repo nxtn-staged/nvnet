@@ -9,8 +9,8 @@ macro_rules! c_type {
         }
     };
     ($(#[$attr:meta])* $vis:vis struct $name:ident($($rest:tt)*);) => {
-        #[repr(C)]
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[repr(transparent)]
+        #[derive(Clone, Copy)]
         $(#[$attr])*
         $vis struct $name($($rest)*);
     };
@@ -38,7 +38,7 @@ macro_rules! c_type {
         $vis enum $($rest)*
     };
     (#[flags] $vis:vis enum $name:ident{$($item_name:ident = $item_expr:expr,)+}) => {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Clone, Copy, PartialEq, Eq)]
         $vis struct $name(u32);
 

@@ -1,8 +1,6 @@
-use core::ffi::c_void;
-
 c_type!(
     pub struct NET_FRAGMENT_VIRTUAL_ADDRESS {
-        pub virtual_address: *mut c_void,
+        pub virtual_address: *mut u8,
     }
 );
 

@@ -2,11 +2,13 @@
 #![feature(const_raw_ptr_to_usize_cast)]
 #![feature(const_size_of_val)]
 #![feature(core_intrinsics)]
+#![feature(default_alloc_error_handler)]
 #![feature(default_free_fn)]
 #![feature(maybe_uninit_extra)]
 #![feature(maybe_uninit_ref)]
 #![feature(option_unwrap_none)]
 #![feature(raw_ref_macros)]
+#![feature(try_reserve)]
 #![feature(untagged_unions)]
 
 #[macro_use]
@@ -43,7 +45,6 @@ use sal::*;
 use crate::{
     socket::UdpSocket,
     windows::{
-        km::wdm::DRIVER_OBJECT,
         prelude as win,
         shared::{
             ntdef::{NTSTATUS, NT_SUCCESS, UNICODE_STRING},
@@ -65,7 +66,7 @@ const LINK_SPEED: u64 = 10_000_000_000; // 10.0 Gbps
 #[no_mangle]
 #[irql_requires_max(PASSIVE_LEVEL)]
 pub extern "system" fn DriverEntry(
-    driver_object: *const DRIVER_OBJECT,
+    driver_object: *const win::DRIVER_OBJECT,
     registry_path: *const UNICODE_STRING,
 ) -> NTSTATUS {
     trace_entry!("DriverEntry");

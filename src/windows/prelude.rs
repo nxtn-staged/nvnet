@@ -5,14 +5,17 @@ pub use crate::windows::{
             netpacketqueue::*, netrxqueue::*, nettxqueue::*,
         },
         wdm::*,
+        wsk::*,
     },
     shared::{
         netcx::shared::net::{
             extension::*, fragment::*, packet::*, ring::*, ringcollection::*, virtualaddress::*,
             virtualaddresstypes::*,
         },
-        ws2def::AF_INET6,
-        ws2ipdef::SOCKADDR_IN6,
+        ntdef::*,
+        ntstatus::*,
+        ws2def::*,
+        ws2ipdef::*,
     },
     wdf::kmdf::{
         wdfdevice::*, wdfdriver::*, wdffileobject::*, wdfio::*, wdfobject::*, wdfrequest::*,

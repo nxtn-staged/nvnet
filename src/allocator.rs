@@ -17,8 +17,12 @@ unsafe impl GlobalAlloc for NonPagedAllocator {
         )
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         win::ExFreePool(ptr)
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        self.alloc(layout)
     }
 }
 

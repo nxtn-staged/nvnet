@@ -305,6 +305,23 @@ pub fn ExFreeToLookasideListEx(lookaside: *mut LOOKASIDE_LIST_EX, entry: PVOID) 
     }
 }
 
+c_type!(
+    #[derive(Default)]
+    pub struct EX_SPIN_LOCK(i32);
+);
+
+extern "system" {
+    pub fn ExAcquireSpinLockShared(spin_lock: *mut EX_SPIN_LOCK) -> KIRQL;
+
+    #[irql_requires(DISPATCH_LEVEL)]
+    pub fn ExReleaseSpinLockShared(spin_lock: *mut EX_SPIN_LOCK, old_irql: KIRQL) -> ();
+
+    pub fn ExAcquireSpinLockExclusive(spin_lock: *mut EX_SPIN_LOCK) -> KIRQL;
+
+    #[irql_requires(DISPATCH_LEVEL)]
+    pub fn ExReleaseSpinLockExclusive(spin_lock: *mut EX_SPIN_LOCK, old_irql: KIRQL) -> ();
+}
+
 pub const unsafe fn BYTE_OFFSET(va: PVOID) -> u32 {
     (va as usize & (PAGE_SIZE - 1)) as _
 }

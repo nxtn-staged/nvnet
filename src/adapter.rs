@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 
 use core::{
-    default::default,
     mem::{self, MaybeUninit},
     ops::{Deref, DerefMut},
     ptr,
@@ -10,7 +9,7 @@ use core::{
 use sal::*;
 
 use crate::{
-    list::{BufPool, NblList},
+    list::BufPool,
     net::MacAddr,
     peer::Peer,
     recv::{self, VEthRxQueue},
@@ -19,13 +18,7 @@ use crate::{
     windows::{
         km::ntifs::RtlRandomEx,
         prelude as win,
-        shared::{
-            ifdef::{NET_IF_MEDIA_CONNECT_STATE, NET_IF_MEDIA_DUPLEX_STATE},
-            ntdef::{NTSTATUS, NT_SUCCESS},
-            ntstatus::STATUS_SUCCESS,
-            ws2def::IPPROTO,
-            ws2ipdef::{IPV6_V6ONLY, SOCKADDR_IN6},
-        },
+        shared::ifdef::{NET_IF_MEDIA_CONNECT_STATE, NET_IF_MEDIA_DUPLEX_STATE},
     },
     LINK_SPEED, MAX_FRAME_DATA_SIZE,
 };
@@ -35,10 +28,7 @@ pub struct VEthAdapter {
 
     pub adapter_handle: win::NETADAPTER, // pre-init
 
-    local_addr: SOCKADDR_IN6,
     pub local_mac_addr: MacAddr,
-    pub remote_addr: SOCKADDR_IN6,
-    remote_mac_addr: Option<MacAddr>,
 
     peers: Vec<Peer>, // TODO
 
@@ -48,7 +38,6 @@ pub struct VEthAdapter {
     pub socket: UdpSocket,
     request: IoRequest,
 
-    pub tx_nbl_list: NblList,
     pub rx_buf_pool: BufPool<VEthFrame>,
 }
 
@@ -63,7 +52,7 @@ impl VEthAdapter {
         }
     }
 
-    pub fn init<'a>(device: win::WDFDEVICE) -> Result<&'a mut Self, NTSTATUS> {
+    pub fn init<'a>(device: win::WDFDEVICE) -> Result<&'a mut Self, win::NTSTATUS> {
         unsafe {
             let uninit = Self::from_device_mut_ptr(device);
 
@@ -73,22 +62,20 @@ impl VEthAdapter {
 
             let mut socket_init = UdpSocket::new(&mut (*uninit).tx_request)?;
             let (socket, context) = socket_init.get();
-            socket.set_option(context, IPV6_V6ONLY, IPPROTO::IPPROTO_IPV6, false)?;
+            socket.set_option(context, win::IPV6_V6ONLY, win::IPPROTO::IPPROTO_IPV6, false)?;
 
-            // let local_addr = SOCKADDR_IN6 {
-            //     family: win::AF_INET6,
-            //     port: 5001u16.to_be(),
-            //     addr: [0; 16],
-            //     ..default()
-            // };
-            // socket.bind(context, &local_addr)?; // TODO remove
+            let local_addr = win::SOCKADDR_IN6 {
+                family: win::AF_INET6,
+                port: 5001u16.to_be(),
+                addr: [0; 16],
+                ..core::default::default()
+            };
+            socket.bind(context, &local_addr)?; // TODO remove
 
             // const TX_POOL_TAG: u32 = u32::from_ne_bytes([b'N', b'V', b'E', b'T']);
             const RX_POOL_TAG: u32 = u32::from_ne_bytes([b'N', b'V', b'E', b'R']);
 
             let rx_buf_pool = BufPool::init(ptr::raw_mut!((*uninit).rx_buf_pool), RX_POOL_TAG)?;
-
-            ptr::raw_mut!((*uninit).local_addr).write(default());
 
             let local_mac_addr = {
                 let mut seed = 42u32;
@@ -98,9 +85,6 @@ impl VEthAdapter {
             };
             ptr::raw_mut!((*uninit).local_mac_addr).write(local_mac_addr);
 
-            ptr::raw_mut!((*uninit).remote_addr).write(default());
-            ptr::raw_mut!((*uninit).remote_mac_addr).write(None);
-
             ptr::raw_mut!((*uninit).peers).write(Vec::new());
 
             mem::forget(tx_request);
@@ -109,7 +93,6 @@ impl VEthAdapter {
             ptr::raw_mut!((*uninit).socket).write(socket_init.take());
             mem::forget(request);
 
-            ptr::raw_mut!((*uninit).tx_nbl_list).write(NblList::new());
             mem::forget(rx_buf_pool);
 
             let init = &mut *uninit;
@@ -149,41 +132,32 @@ impl VEthAdapter {
         unsafe { win::NetAdapterSetLinkState(self.adapter_handle, &link_state) };
     }
 
-    pub fn set_local_addr(&mut self, local_addr: SOCKADDR_IN6) -> Result<(), NTSTATUS> {
-        self.socket.bind(&mut self.request, &local_addr)?;
+    pub fn set_local_addr(&mut self, local_addr: win::SOCKADDR_IN6) -> Result<(), win::NTSTATUS> {
+        // self.socket.bind(&mut self.request, &local_addr)?;
         // self.socket.bind(&mut self.rx_request, &local_addr)?;
-        self.local_addr = local_addr;
         Ok(())
     }
 
-    pub fn add_peer(&mut self, remote_addr: SOCKADDR_IN6) {
-        self.peers.push(Peer::new(remote_addr))
+    pub fn add_peer(&mut self, remote_addr: win::SOCKADDR_IN6) -> Result<(), win::NTSTATUS> {
+        if self.peers.try_reserve(1).is_err() {
+            return Err(win::STATUS_INSUFFICIENT_RESOURCES);
+        }
+        self.peers.push(Peer::new(remote_addr));
+        Ok(())
     }
 
     fn init_tx_queue(
         &'static mut self,
         tx_queue: win::NETPACKETQUEUE,
-    ) -> Result<&mut VEthTxQueue, NTSTATUS> {
-        VEthTxQueue::init(
-            tx_queue,
-            &self.socket,
-            &mut self.tx_request,
-            &self.remote_addr,
-            &self.remote_mac_addr,
-        )
+    ) -> Result<&mut VEthTxQueue, win::NTSTATUS> {
+        VEthTxQueue::init(tx_queue, &self.socket, &mut self.tx_request, &self.peers)
     }
 
     fn init_rx_queue(
         &'static mut self,
         rx_queue: win::NETPACKETQUEUE,
-    ) -> Result<&mut VEthRxQueue, NTSTATUS> {
-        VEthRxQueue::init(
-            rx_queue,
-            &self.socket,
-            &mut self.rx_request,
-            &self.remote_addr,
-            &mut self.remote_mac_addr,
-        )
+    ) -> Result<&mut VEthRxQueue, win::NTSTATUS> {
+        VEthRxQueue::init(rx_queue, &self.socket, &mut self.rx_request, &self.peers)
     }
 
     pub fn drop(&mut self) {
@@ -276,7 +250,7 @@ pub struct VEthFrame {
 pub extern "system" fn evt_adapter_create_tx_queue(
     adapter: win::NETADAPTER,
     tx_queue_init: *mut win::NETTXQUEUE_INIT,
-) -> NTSTATUS {
+) -> win::NTSTATUS {
     trace_entry!("evt_adapter_create_tx_queue");
 
     let status = (|| {
@@ -298,7 +272,7 @@ pub extern "system" fn evt_adapter_create_tx_queue(
                 tx_queue.as_mut_ptr(),
             )
         };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("NetTxQueueCreate", status);
             return status;
         }
@@ -307,7 +281,7 @@ pub extern "system" fn evt_adapter_create_tx_queue(
         if let Err(status) = adapter.init_tx_queue(tx_queue) {
             return status;
         }
-        STATUS_SUCCESS
+        win::STATUS_SUCCESS
     })();
 
     trace_exit_status!("evt_adapter_create_tx_queue", status);
@@ -318,7 +292,7 @@ pub extern "system" fn evt_adapter_create_tx_queue(
 pub extern "system" fn evt_adapter_create_rx_queue(
     adapter: win::NETADAPTER,
     rx_queue_init: *mut win::NETRXQUEUE_INIT,
-) -> NTSTATUS {
+) -> win::NTSTATUS {
     trace_entry!("evt_adapter_create_rx_queue");
 
     let status = (|| {
@@ -340,7 +314,7 @@ pub extern "system" fn evt_adapter_create_rx_queue(
                 rx_queue.as_mut_ptr(),
             )
         };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("NetRxQueueCreate", status);
             return status;
         }
@@ -349,7 +323,7 @@ pub extern "system" fn evt_adapter_create_rx_queue(
         if let Err(status) = adapter.init_rx_queue(rx_queue) {
             return status;
         }
-        STATUS_SUCCESS
+        win::STATUS_SUCCESS
     })();
 
     trace_exit_status!("evt_adapter_create_rx_queue", status);

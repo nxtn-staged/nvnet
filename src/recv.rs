@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use core::{
     mem::{self, MaybeUninit},
     ptr,
@@ -7,8 +9,11 @@ use core::{
 use sal::*;
 
 use crate::{
-    net::{ArpPacket, EthFrameHeader, MacAddr},
+    net::{
+        EthHeader, Layer2ArpPacket, Layer2Icmpv6Header, Layer2Icmpv6NaHeader, Layer2Icmpv6NsHeader,
+    },
     os::thread::Thread,
+    peer::Peer,
     socket::{IoRequest, UdpSocket, UdpSocketWorker},
     windows::{
         km::{
@@ -38,8 +43,7 @@ impl VEthRxQueue {
         rx_queue: win::NETPACKETQUEUE,
         socket: &'static UdpSocket,
         request: &'static mut IoRequest,
-        remote_addr: &'static SOCKADDR_IN6,
-        remote_mac_addr: &'static mut Option<MacAddr>,
+        peers: &'static Vec<Peer>,
     ) -> Result<&'a mut Self, NTSTATUS> {
         unsafe {
             let uninit = Self::from_queue_mut_ptr(rx_queue);
@@ -68,8 +72,7 @@ impl VEthRxQueue {
                 init,
                 socket,
                 request,
-                remote_addr,
-                remote_mac_addr,
+                peers,
                 state,
             );
 
@@ -129,8 +132,7 @@ struct VEthRxWorker<'a> {
 
     notify: &'a AtomicBool,
 
-    remote_addr: &'a SOCKADDR_IN6,
-    remote_mac_addr: &'a mut Option<MacAddr>,
+    peers: &'a Vec<Peer>,
 
     state: &'a mut WorkerState,
 
@@ -144,8 +146,7 @@ impl<'a> VEthRxWorker<'a> {
         rx: &'a VEthRxQueue,
         socket: &'a UdpSocket,
         request: &'a mut IoRequest,
-        remote_addr: &'a SOCKADDR_IN6,
-        remote_mac_addr: &'a mut Option<MacAddr>,
+        peers: &'a Vec<Peer>,
         state: &'a mut WorkerState,
     ) {
         ptr::raw_mut!((*uninit).socket).write(UdpSocketWorker::new(socket, request));
@@ -156,10 +157,80 @@ impl<'a> VEthRxWorker<'a> {
 
         ptr::raw_mut!((*uninit).notify).write(&rx.notify);
 
-        ptr::raw_mut!((*uninit).remote_addr).write(remote_addr);
-        ptr::raw_mut!((*uninit).remote_mac_addr).write(remote_mac_addr);
+        ptr::raw_mut!((*uninit).peers).write(peers);
 
         ptr::raw_mut!((*uninit).state).write(state);
+    }
+
+    fn parse_eth(&mut self, peer: &Peer, buf: *const u8, len: usize) {
+        if len < mem::size_of::<EthHeader>() {
+            return;
+        }
+        let eth = unsafe { &*buf.cast::<EthHeader>() };
+        if eth.is_arp() {
+            self.parse_arp(peer, buf, len);
+            return;
+        }
+        if eth.is_ipv6() {
+            self.parse_icmpv6(peer, buf, len);
+            return;
+        }
+    }
+
+    fn parse_arp(&mut self, peer: &Peer, buf: *const u8, len: usize) {
+        if len < mem::size_of::<Layer2ArpPacket>() {
+            return;
+        }
+        let l2 = unsafe { &*buf.cast::<Layer2ArpPacket>() };
+        let arp = &l2.arp;
+        if !arp.is_eth() || !arp.is_ipv4() {
+            return;
+        }
+        if arp.src_ipv4().is_unspecified() {
+            return;
+        }
+        peer.mac_addr.write().replace(*arp.src_mac());
+    }
+
+    fn parse_icmpv6(&mut self, peer: &Peer, buf: *const u8, len: usize) {
+        if len < mem::size_of::<Layer2Icmpv6Header>() {
+            return;
+        }
+        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6Header>() };
+        let (ipv6, icmpv6) = (&l2.ipv6, &l2.icmpv6);
+        if !ipv6.is_icmpv6() {
+            return;
+        }
+        if icmpv6.is_neighbor_solicitation() {
+            self.parse_nd_ns(peer, buf, len);
+            return;
+        }
+        if icmpv6.is_neighbor_advertisement() {
+            self.parse_nd_na(peer, buf, len);
+            return;
+        }
+    }
+
+    fn parse_nd_ns(&mut self, peer: &Peer, buf: *const u8, len: usize) {
+        if len < mem::size_of::<Layer2Icmpv6NsHeader>() {
+            return;
+        }
+        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6NsHeader>() };
+        let icmpv6_ns = &l2.icmpv6_ns;
+        if let Some(source_mac) = icmpv6_ns.source_mac() {
+            peer.mac_addr.write().replace(*source_mac);
+        }
+    }
+
+    fn parse_nd_na(&mut self, peer: &Peer, buf: *const u8, len: usize) {
+        if len < mem::size_of::<Layer2Icmpv6NaHeader>() {
+            return;
+        }
+        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6NaHeader>() };
+        let icmpv6_na = &l2.icmpv6_na;
+        if let Some(target_mac) = icmpv6_na.target_mac() {
+            peer.mac_addr.write().replace(*target_mac);
+        }
     }
 }
 
@@ -188,7 +259,7 @@ extern "system" fn veth_rx_worker(rx: &mut VEthRxWorker) {
                 )
             };
             let virtual_address = virtual_address.virtual_address;
-            unsafe { MmInitializeMdl(rx.mdl.as_mut_ptr(), virtual_address, length) };
+            unsafe { MmInitializeMdl(rx.mdl.as_mut_ptr(), virtual_address.cast(), length) };
             unsafe { MmBuildMdlForNonPagedPool(rx.mdl.as_mut_ptr()) };
             let buf = WSK_BUF {
                 mdl: unsafe { rx.mdl.assume_init_mut() },
@@ -204,19 +275,9 @@ extern "system" fn veth_rx_worker(rx: &mut VEthRxWorker) {
                     fragment.set_valid_length(received as _);
                     fragment.set_offset(0);
 
-                    if received >= mem::size_of::<EthFrameHeader>() + mem::size_of::<ArpPacket>() {
-                        let eth = unsafe { &*virtual_address.cast::<EthFrameHeader>() };
-                        if eth.is_arp() {
-                            let arp = unsafe {
-                                &*virtual_address
-                                    .cast::<u8>()
-                                    .offset(mem::size_of::<EthFrameHeader>() as _)
-                                    .cast::<ArpPacket>()
-                            };
-                            if arp.is_reply() {
-                                rx.remote_mac_addr.replace(arp.src_mac());
-                            }
-                        }
+                    let addr = unsafe { rx.addr.assume_init_ref().addr };
+                    if let Some(peer) = rx.peers.iter().find(|peer| peer.socket_addr.addr == addr) {
+                        rx.parse_eth(peer, virtual_address, received);
                     }
                 }
             }

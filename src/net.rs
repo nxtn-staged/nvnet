@@ -1,5 +1,6 @@
 use crate::windows::km::xfilter::{ETH_IS_BROADCAST, ETH_IS_MULTICAST};
 
+#[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MacAddr([u8; 6]);
 
@@ -21,36 +22,54 @@ impl MacAddr {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Ipv4Addr([u8; 4]);
+pub enum IpAddr {
+    Ipv4(Ipv4Addr),
+    Ipv6(Ipv6Addr),
+}
 
-impl Ipv4Addr {
-    pub fn from_ipv6_mapped(ipv6: &[u8; 16]) -> Option<Self> {
+impl IpAddr {
+    pub fn from_ipv6(ipv6: &[u8; 16]) -> Self {
         match ipv6 {
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d] => Some(Self([*a, *b, *c, *d])),
-            _ => None,
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d] => {
+                Self::Ipv4(Ipv4Addr([*a, *b, *c, *d]))
+            }
+            _ => IpAddr::Ipv6(Ipv6Addr(*ipv6)),
         }
     }
 }
 
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
+pub struct Ipv4Addr([u8; 4]);
+
+impl Ipv4Addr {
+    pub fn is_unspecified(&self) -> bool {
+        self.0 == [0; 4]
+    }
+}
+
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
+pub struct Ipv6Addr([u8; 16]);
+
 #[repr(C)]
-pub struct EthFrameHeader {
+pub struct EthHeader {
     dst_addr: MacAddr,
     src_addr: MacAddr,
     eth_type: [u8; 2],
 }
 
-impl EthFrameHeader {
-    pub fn dst_addr(&self) -> &MacAddr {
+impl EthHeader {
+    pub fn dst(&self) -> &MacAddr {
         &self.dst_addr
-    }
-
-    pub fn src_addr(&self) -> &MacAddr {
-        &self.src_addr
     }
 
     pub fn is_arp(&self) -> bool {
         self.eth_type[0] == 0x08 && self.eth_type[1] == 0x06
+    }
+
+    pub fn is_ipv6(&self) -> bool {
+        self.eth_type[0] == 0x86 && self.eth_type[1] == 0xdd
     }
 }
 
@@ -68,19 +87,119 @@ pub struct ArpPacket {
 }
 
 impl ArpPacket {
-    pub fn is_request(&self) -> bool {
-        self.operation[0] == 0x00 && self.operation[1] == 0x01
+    pub fn is_eth(&self) -> bool {
+        self.hardware_type[0] == 0x00 && self.hardware_type[1] == 0x01 && self.hardware_len == 6
     }
 
-    pub fn is_reply(&self) -> bool {
-        self.operation[0] == 0x00 && self.operation[1] == 0x10
+    pub fn is_ipv4(&self) -> bool {
+        self.protocol_type[0] == 0x08 && self.protocol_type[1] == 0x00 && self.protocol_len == 4
     }
 
-    pub fn src_mac(&self) -> MacAddr {
-        self.src_hardware_addr.clone()
+    pub fn src_mac(&self) -> &MacAddr {
+        &self.src_hardware_addr
     }
 
-    pub fn dst_eq_ipv4(&self, addr: &Ipv4Addr) -> bool {
-        self.dst_protocol_addr == *addr
+    pub fn src_ipv4(&self) -> &Ipv4Addr {
+        &self.src_protocol_addr
     }
+}
+
+#[repr(C)]
+pub struct Layer2ArpPacket {
+    pub eth: EthHeader,
+    pub arp: ArpPacket,
+}
+
+#[repr(C)]
+pub struct Ipv6Header {
+    unused: [u8; 4],
+    payload_len: u16,
+    next_header: u8,
+    hop_limit: u8,
+    src_addr: Ipv6Addr,
+    dst_addr: Ipv6Addr,
+}
+
+impl Ipv6Header {
+    pub fn is_icmpv6(&self) -> bool {
+        self.next_header == 0x3a
+    }
+}
+
+#[repr(C)]
+pub struct Icmpv6Header {
+    r#type: u8,
+    code: u8,
+    checksum: u16,
+}
+
+impl Icmpv6Header {
+    pub fn is_neighbor_solicitation(&self) -> bool {
+        self.r#type == 135 && self.code == 0
+    }
+
+    pub fn is_neighbor_advertisement(&self) -> bool {
+        self.r#type == 136 && self.code == 0
+    }
+}
+
+#[repr(C)]
+pub struct Layer2Icmpv6Header {
+    pub eth: EthHeader,
+    pub ipv6: Ipv6Header,
+    pub icmpv6: Icmpv6Header,
+}
+
+#[repr(C)]
+pub struct Icmpv6NsHeader {
+    header: Icmpv6Header,
+    unused: [u8; 4],
+    target_addr: Ipv6Addr,
+    opt_type: u8,
+    opt_len: u8,
+    source_mac_addr: MacAddr,
+}
+
+impl Icmpv6NsHeader {
+    pub fn source_mac(&self) -> Option<&MacAddr> {
+        if self.opt_type == 1 && self.opt_len == 1 {
+            Some(&self.source_mac_addr)
+        } else {
+            None
+        }
+    }
+}
+
+#[repr(C)]
+pub struct Layer2Icmpv6NsHeader {
+    pub eth: EthHeader,
+    pub ipv6: Ipv6Header,
+    pub icmpv6_ns: Icmpv6NsHeader,
+}
+
+#[repr(C)]
+pub struct Icmpv6NaHeader {
+    header: Icmpv6Header,
+    unused: [u8; 4],
+    target_addr: Ipv6Addr,
+    opt_type: u8,
+    opt_len: u8,
+    target_mac_addr: MacAddr,
+}
+
+impl Icmpv6NaHeader {
+    pub fn target_mac(&self) -> Option<&MacAddr> {
+        if self.opt_type == 2 && self.opt_len == 1 {
+            Some(&self.target_mac_addr)
+        } else {
+            None
+        }
+    }
+}
+
+#[repr(C)]
+pub struct Layer2Icmpv6NaHeader {
+    pub eth: EthHeader,
+    pub ipv6: Ipv6Header,
+    pub icmpv6_na: Icmpv6NaHeader,
 }

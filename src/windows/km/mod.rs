@@ -1,4 +1,3 @@
-pub mod ndis;
 pub mod netcx;
 pub mod ntddk;
 pub mod ntifs;

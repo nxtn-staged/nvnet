@@ -1,6 +1,6 @@
 use core::{mem::MaybeUninit, ptr};
 
-pub struct InitGuard<T: ?Sized>(*mut T);
+pub struct InitGuard<T>(*mut T);
 
 impl<T> InitGuard<T> {
     pub fn new(init: *mut T) -> Self {
@@ -8,7 +8,7 @@ impl<T> InitGuard<T> {
     }
 }
 
-impl<T: ?Sized> Drop for InitGuard<T> {
+impl<T> Drop for InitGuard<T> {
     fn drop(&mut self) {
         unsafe { ptr::drop_in_place(self.0) }
     }
