@@ -1,0 +1,15 @@
+use crate::windows::shared::ifdef::IF_PHYSICAL_ADDRESS;
+
+pub const NDIS_PACKET_TYPE_DIRECTED: u32 = 0x00000001;
+pub const NDIS_PACKET_TYPE_MULTICAST: u32 = 0x00000002;
+pub const NDIS_PACKET_TYPE_ALL_MULTICAST: u32 = 0x00000004;
+pub const NDIS_PACKET_TYPE_BROADCAST: u32 = 0x00000008;
+pub const NDIS_PACKET_TYPE_PROMISCUOUS: u32 = 0x00000020;
+
+pub type NDIS_IF_PHYSICAL_ADDRESS = IF_PHYSICAL_ADDRESS;
+
+c_type!(
+    pub enum NDIS_SUPPORTED_PAUSE_FUNCTIONS {
+        NdisPauseFunctionsUnsupported = 0,
+    }
+);
