@@ -1,4 +1,4 @@
-use core::ffi::c_void;
+use core::mem;
 
 c_type!(
     pub enum WDF_TRI_STATE {
@@ -12,26 +12,23 @@ c_type!(
     pub struct WDFDEVICE_INIT;
 );
 
-c_type!(
-    pub struct WDFOBJECT(pub *mut c_void);
-);
-
-declare_handle!(WDFDRIVER);
-declare_handle!(WDFDEVICE);
-declare_handle!(WDFQUEUE);
-declare_handle!(WDFREQUEST);
-declare_handle!(WDFFILEOBJECT);
-declare_handle!(WDFDMAENABLER);
-declare_handle!(WDFCMRESLIST);
+win_handle!(WDFOBJECT);
+win_handle!(WDFDRIVER);
+win_handle!(WDFDEVICE);
+win_handle!(WDFQUEUE);
+win_handle!(WDFREQUEST);
+win_handle!(WDFFILEOBJECT);
+win_handle!(WDFDMAENABLER);
+win_handle!(WDFCMRESLIST);
 
 impl From<WDFDEVICE> for WDFOBJECT {
     fn from(handle: WDFDEVICE) -> Self {
-        Self(handle.0)
+        unsafe { mem::transmute(handle) }
     }
 }
 
 impl From<WDFFILEOBJECT> for WDFOBJECT {
     fn from(handle: WDFFILEOBJECT) -> Self {
-        Self(handle.0)
+        unsafe { mem::transmute(handle) }
     }
 }

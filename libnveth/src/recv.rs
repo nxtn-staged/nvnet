@@ -6,23 +6,16 @@ use core::{
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::{
-    net::{
-        EthHeader, Layer2ArpPacket, Layer2Icmpv6Header, Layer2Icmpv6NaHeader, Layer2Icmpv6NsHeader,
-    },
+    adapter::{VEthCipherFrame, VEthCipherFrameHeader},
+    crypto::aes_gcm::AesGcm,
+    net::{EthHeader, L2Icmpv6Header, L2Icmpv6NaHeader, L2Icmpv6NsHeader, Layer2ArpPacket},
     os::thread::Thread,
     peer::Peer,
     socket::{IoRequest, UdpSocket, UdpSocketWorker},
-    windows::{
-        km::{
-            wdm::{MmBuildMdlForNonPagedPool, MmInitializeMdl, MDL},
-            wsk::WSK_BUF,
-        },
-        prelude as win,
-        shared::{ntdef::NTSTATUS, ws2ipdef::SOCKADDR_IN6},
-    },
+    windows::prelude as win,
     worker::{Worker, WorkerState},
 };
 
@@ -30,6 +23,7 @@ pub struct VEthRxQueue {
     rx_queue: win::NETPACKETQUEUE,
     rings: *const win::NET_RING_COLLECTION,
     virtual_address_extension: win::NET_EXTENSION,
+    mdl_extension: win::NET_EXTENSION,
 
     notify: AtomicBool,
 
@@ -44,7 +38,7 @@ impl VEthRxQueue {
         socket: &'static UdpSocket,
         request: &'static mut IoRequest,
         peers: &'static Vec<Peer>,
-    ) -> Result<&'a mut Self, NTSTATUS> {
+    ) -> Result<&'a mut Self, win::NTSTATUS> {
         unsafe {
             let uninit = Self::from_queue_mut_ptr(rx_queue);
 
@@ -61,6 +55,13 @@ impl VEthRxQueue {
                 &query,
                 ptr::raw_mut!((*uninit).virtual_address_extension),
             );
+
+            let query = win::NET_EXTENSION_QUERY_INIT(
+                win::NET_FRAGMENT_EXTENSION_MDL_NAME.as_ptr(),
+                win::NET_FRAGMENT_EXTENSION_MDL_VERSION_1,
+                win::NET_EXTENSION_TYPE::NetExtensionTypeFragment,
+            );
+            win::NetRxQueueGetExtension(rx_queue, &query, ptr::raw_mut!((*uninit).mdl_extension));
 
             ptr::raw_mut!((*uninit).notify).write(AtomicBool::new(false));
 
@@ -129,6 +130,7 @@ struct VEthRxWorker<'a> {
     rx_queue: win::NETPACKETQUEUE,
     rings: *const win::NET_RING_COLLECTION,
     virtual_address_extension: *const win::NET_EXTENSION,
+    mdl_extension: *const win::NET_EXTENSION,
 
     notify: &'a AtomicBool,
 
@@ -136,8 +138,7 @@ struct VEthRxWorker<'a> {
 
     state: &'a mut WorkerState,
 
-    mdl: MaybeUninit<MDL>,
-    addr: MaybeUninit<SOCKADDR_IN6>,
+    addr: MaybeUninit<win::SOCKADDR_IN6>,
 }
 
 impl<'a> VEthRxWorker<'a> {
@@ -154,6 +155,7 @@ impl<'a> VEthRxWorker<'a> {
         ptr::raw_mut!((*uninit).rx_queue).write(rx.rx_queue);
         ptr::raw_mut!((*uninit).rings).write(rx.rings);
         ptr::raw_mut!((*uninit).virtual_address_extension).write(&rx.virtual_address_extension);
+        ptr::raw_mut!((*uninit).mdl_extension).write(&rx.mdl_extension);
 
         ptr::raw_mut!((*uninit).notify).write(&rx.notify);
 
@@ -193,10 +195,10 @@ impl<'a> VEthRxWorker<'a> {
     }
 
     fn parse_icmpv6(&mut self, peer: &Peer, buf: *const u8, len: usize) {
-        if len < mem::size_of::<Layer2Icmpv6Header>() {
+        if len < mem::size_of::<L2Icmpv6Header>() {
             return;
         }
-        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6Header>() };
+        let l2 = unsafe { &*buf.cast::<L2Icmpv6Header>() };
         let (ipv6, icmpv6) = (&l2.ipv6, &l2.icmpv6);
         if !ipv6.is_icmpv6() {
             return;
@@ -212,10 +214,10 @@ impl<'a> VEthRxWorker<'a> {
     }
 
     fn parse_nd_ns(&mut self, peer: &Peer, buf: *const u8, len: usize) {
-        if len < mem::size_of::<Layer2Icmpv6NsHeader>() {
+        if len < mem::size_of::<L2Icmpv6NsHeader>() {
             return;
         }
-        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6NsHeader>() };
+        let l2 = unsafe { &*buf.cast::<L2Icmpv6NsHeader>() };
         let icmpv6_ns = &l2.icmpv6_ns;
         if let Some(source_mac) = icmpv6_ns.source_mac() {
             peer.mac_addr.write().replace(*source_mac);
@@ -223,10 +225,10 @@ impl<'a> VEthRxWorker<'a> {
     }
 
     fn parse_nd_na(&mut self, peer: &Peer, buf: *const u8, len: usize) {
-        if len < mem::size_of::<Layer2Icmpv6NaHeader>() {
+        if len < mem::size_of::<L2Icmpv6NaHeader>() {
             return;
         }
-        let l2 = unsafe { &*buf.cast::<Layer2Icmpv6NaHeader>() };
+        let l2 = unsafe { &*buf.cast::<L2Icmpv6NaHeader>() };
         let icmpv6_na = &l2.icmpv6_na;
         if let Some(target_mac) = icmpv6_na.target_mac() {
             peer.mac_addr.write().replace(*target_mac);
@@ -253,20 +255,16 @@ extern "system" fn veth_rx_worker(rx: &mut VEthRxWorker) {
                 unsafe { &mut *win::NetRingGetFragmentAtIndex(fragments, fragment_index) };
             let length = fragment.capacity() as _;
             let virtual_address = unsafe {
-                &mut *win::NetExtensionGetFragmentVirtualAddress(
+                &*win::NetExtensionGetFragmentVirtualAddress(
                     rx.virtual_address_extension,
                     fragment_index,
                 )
             };
             let virtual_address = virtual_address.virtual_address;
-            unsafe { MmInitializeMdl(rx.mdl.as_mut_ptr(), virtual_address.cast(), length) };
-            unsafe { MmBuildMdlForNonPagedPool(rx.mdl.as_mut_ptr()) };
-            let buf = WSK_BUF {
-                mdl: unsafe { rx.mdl.assume_init_mut() },
-                offset: 0,
-                length,
-            };
-            match rx.socket.recv_from(&buf, &mut rx.addr) {
+            let mdl =
+                unsafe { &*win::NetExtensionGetFragmentMdl(rx.mdl_extension, fragment_index) };
+            let mdl = mdl.mdl;
+            match rx.socket.recv_from(mdl, length, &mut rx.addr) {
                 Err(_status) => {
                     // TODO
                 }
@@ -274,6 +272,23 @@ extern "system" fn veth_rx_worker(rx: &mut VEthRxWorker) {
                     trace_println!("--> %u", received);
                     fragment.set_valid_length(received as _);
                     fragment.set_offset(0);
+
+                    if received >= mem::size_of::<VEthCipherFrameHeader>() {
+                        let data_length = received - mem::size_of::<VEthCipherFrameHeader>();
+                        if false {
+                            let _: Result<(), win::NTSTATUS> = (|| {
+                                let cipher = AesGcm::new([0; AesGcm::KEY_SIZE128])?;
+                                let frame =
+                                    unsafe { &mut *virtual_address.cast::<VEthCipherFrame>() };
+                                cipher.decrypt(
+                                    &frame.header.nonce,
+                                    &mut frame.data[..data_length],
+                                    &frame.header.tag,
+                                )?;
+                                Ok(())
+                            })();
+                        }
+                    }
 
                     let addr = unsafe { rx.addr.assume_init_ref().addr };
                     if let Some(peer) = rx.peers.iter().find(|peer| peer.socket_addr.addr == addr) {

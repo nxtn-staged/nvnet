@@ -1,13 +1,16 @@
 use std::{error::Error, fmt, mem::MaybeUninit, ptr};
 
-use winapi::um::{
-    errhandlingapi::GetLastError,
-    winbase::{
-        FormatMessageW, LocalFree, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
-    },
+use winapi::um::winbase::{
+    FormatMessageW, LocalFree, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
 };
 
-use crate::ext::FromRawUtf16;
+use crate::{
+    bindings::windows::win32::{
+        debug::{GetLastError, RtlNtStatusToDosError},
+        system_services::NTSTATUS,
+    },
+    ext::FromRawUtf16,
+};
 
 pub struct WinError {
     error: u32,
@@ -17,6 +20,12 @@ impl WinError {
     pub fn new() -> Self {
         Self {
             error: unsafe { GetLastError() },
+        }
+    }
+
+    pub fn from_nt_status(status: i32) -> Self {
+        Self {
+            error: unsafe { RtlNtStatusToDosError(NTSTATUS(status)) },
         }
     }
 

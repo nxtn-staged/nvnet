@@ -1,18 +1,26 @@
-use std::{ffi::c_void, mem, ptr};
+use std::{default::default, mem, ops::BitOr, ptr};
 
-use winapi::{
-    shared::minwindef::FALSE,
-    um::{
-        fileapi::{CreateFileW, OPEN_EXISTING},
-        handleapi::{CloseHandle, INVALID_HANDLE_VALUE},
-        ioapiset::DeviceIoControl,
-        winnt::{FILE_GENERIC_READ, FILE_GENERIC_WRITE},
+use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+
+use crate::{
+    bindings::windows::win32::{
+        file_system::{CreateFileW, FILE_ACCESS_FLAGS, FILE_CREATE_FLAGS, FILE_SHARE_FLAGS},
+        system_services::{DeviceIoControl, HANDLE},
+        windows_programming::CloseHandle,
     },
+    error::WinError,
+    ext::ToUtf16,
 };
 
-use crate::{error::WinError, ext::ToUtf16};
+impl BitOr for FILE_ACCESS_FLAGS {
+    type Output = Self;
 
-pub struct Device(*mut c_void);
+    fn bitor(self, rhs: Self) -> Self::Output {
+        (self.0 | rhs.0).into()
+    }
+}
+
+pub struct Device(HANDLE);
 
 impl Device {
     pub fn open(path: impl AsRef<str>) -> Result<Self, WinError> {
@@ -20,15 +28,15 @@ impl Device {
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                0,
+                FILE_ACCESS_FLAGS::FILE_GENERIC_READ | FILE_ACCESS_FLAGS::FILE_GENERIC_WRITE,
+                FILE_SHARE_FLAGS::FILE_SHARE_NONE,
                 ptr::null_mut(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
+                FILE_CREATE_FLAGS::OPEN_EXISTING,
+                default(),
+                default(),
             )
         };
-        if handle == INVALID_HANDLE_VALUE {
+        if handle.0 == INVALID_HANDLE_VALUE as isize {
             Err(WinError::new())
         } else {
             Ok(Self(handle))
@@ -52,7 +60,7 @@ impl Device {
                 ptr::null_mut(),
             )
         };
-        if success == FALSE {
+        if !success.as_bool() {
             Err(WinError::new())
         } else {
             Ok(())
@@ -62,6 +70,7 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
+        let success = unsafe { CloseHandle(self.0) };
+        debug_assert_eq!(success.as_bool(), true);
     }
 }

@@ -6,19 +6,17 @@ use core::{
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::{
-    adapter::VEthFrame,
+    adapter::{VEthCipherFrameHeader, VEthFrame},
+    crypto::aes_gcm::AesGcm,
     net::EthHeader,
     os::thread::Thread,
     peer::Peer,
     socket::{IoRequest, UdpSocket, UdpSocketWorker},
     windows::{
-        km::{
-            wdm::{MmBuildMdlForNonPagedPool, MmInitializeMdl, MmSizeOfMdl, MDL, PAGE_SIZE},
-            wsk::WSK_BUF,
-        },
+        km::wdm::{MmBuildMdlForNonPagedPool, MmInitializeMdl, MmSizeOfMdl, MDL, PAGE_SIZE},
         prelude as win,
     },
     worker::{Worker, WorkerState},
@@ -193,7 +191,7 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                 let fragment =
                     unsafe { &mut *win::NetRingGetFragmentAtIndex(fragments, fragment_index) };
                 let virtual_address = unsafe {
-                    &mut *win::NetExtensionGetFragmentVirtualAddress(
+                    &*win::NetExtensionGetFragmentVirtualAddress(
                         tx.virtual_address_extension,
                         fragment_index,
                     )
@@ -201,7 +199,7 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                 let virtual_address = virtual_address.virtual_address;
                 let length = fragment.valid_length() as _;
                 unsafe {
-                    tx.frame.data[frame_offset..frame_offset + length].copy_from_slice(
+                    tx.frame.plain.data[frame_offset..frame_offset + length].copy_from_slice(
                         slice::from_raw_parts(
                             virtual_address.offset(fragment.offset() as _),
                             length,
@@ -214,19 +212,29 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
             unsafe {
                 MmInitializeMdl(
                     ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl),
-                    tx.frame.data.as_mut_ptr().cast(),
+                    tx.frame.plain.data.as_mut_ptr().cast(),
                     frame_offset,
                 )
             };
             unsafe { MmBuildMdlForNonPagedPool(ptr::raw_mut!((*tx.mdl.as_mut_ptr()).mdl)) };
-            let buf = WSK_BUF {
-                mdl: unsafe { &mut tx.mdl.assume_init_mut().mdl },
-                offset: 0,
-                length: frame_offset,
-            };
+            let mdl = unsafe { &mut tx.mdl.assume_init_mut().mdl };
             let socket = &mut tx.socket;
-            let mut send_to = |addr| {
-                match socket.send_to(&buf, addr) {
+            let mut send_to = |frame: &mut VEthFrame, addr| {
+                if false {
+                    let _: Result<(), win::NTSTATUS> = (|| {
+                        let cipher = AesGcm::new([0; AesGcm::KEY_SIZE128])?;
+                        let frame = unsafe { &mut frame.cipher };
+                        let data_length = frame_offset - mem::size_of::<VEthCipherFrameHeader>();
+                        cipher.encrypt(
+                            &frame.header.nonce,
+                            &mut frame.data[..data_length],
+                            &mut frame.header.tag,
+                        )?;
+                        Ok(())
+                    })();
+                }
+
+                match socket.send_to(mdl, frame_offset, addr) {
                     Err(_status) => {
                         // TODO
                     }
@@ -236,11 +244,14 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                 }
             };
             if frame_offset >= mem::size_of::<EthHeader>() {
-                let eth = unsafe { &*tx.frame.data.as_ptr().cast::<EthHeader>() };
+                let frame = &mut tx.frame;
+                let eth = unsafe { &*frame.plain.data.as_ptr().cast::<EthHeader>() };
                 let dst = eth.dst();
                 if dst.is_multicast() {
                     if dst.is_broadcast() {
-                        tx.peers.iter().for_each(|peer| send_to(&peer.socket_addr));
+                        tx.peers
+                            .iter()
+                            .for_each(|peer| send_to(frame, &peer.socket_addr));
                     }
                 } else if let Some(peer) = tx.peers.iter().find(|peer| {
                     if let Some(addr) = peer.mac_addr.read().as_ref() {
@@ -249,7 +260,7 @@ extern "system" fn veth_tx_worker(tx: &mut VEthTxWorker) {
                         false
                     }
                 }) {
-                    send_to(&peer.socket_addr);
+                    send_to(frame, &peer.socket_addr);
                 }
             }
             packets.next_index = unsafe { win::NetRingIncrementIndex(packets, packet_index) };

@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
+base64 = "0.13.0"
 serde = { version = "1.0.120", features = ["derive"] }
 serde_yaml = "0.8.15"
-winapi = { version = "0.3", features = ["std", "ws2def", "errhandlingapi", "fileapi", "handleapi", "ioapiset", "winbase"] }
+shared = { path = "../shared" }
+winapi = { version = "0.3", features = ["std", "bcrypt", "ws2def", "handleapi", "winbase"] }
+windows = "0.3.1"
+
+[build-dependencies]
+windows = "0.3.1"

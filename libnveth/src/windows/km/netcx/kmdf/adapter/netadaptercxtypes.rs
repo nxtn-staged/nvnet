@@ -1,17 +1,19 @@
+use core::mem;
+
 use crate::windows::wdf::kmdf::wdftypes::WDFOBJECT;
 
-declare_handle!(NETADAPTER);
-declare_handle!(NETPACKETQUEUE);
+win_handle!(NETADAPTER);
+win_handle!(NETPACKETQUEUE);
 
 impl From<NETADAPTER> for WDFOBJECT {
     fn from(handle: NETADAPTER) -> Self {
-        Self(handle.0)
+        unsafe { mem::transmute(handle) }
     }
 }
 
 impl From<NETPACKETQUEUE> for WDFOBJECT {
     fn from(handle: NETPACKETQUEUE) -> Self {
-        Self(handle.0)
+        unsafe { mem::transmute(handle) }
     }
 }
 

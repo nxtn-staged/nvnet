@@ -4,13 +4,12 @@ use core::{
     ptr,
 };
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::{
-    adapter::{self, VEthAdapter},
+    adapter::{self, VEthAdapter, VEthCipherFrame},
     ioctl::*,
     windows::prelude as win,
-    LINK_SPEED, MAX_FRAME_DATA_SIZE,
 };
 
 #[irql_requires_max(PASSIVE_LEVEL)]
@@ -30,11 +29,11 @@ pub extern "system" fn evt_device_prepare_hardware(
         };
         let adapter_handle = adapter.adapter_handle;
         let link_layer_capabilities =
-            win::NET_ADAPTER_LINK_LAYER_CAPABILITIES_INIT(LINK_SPEED, LINK_SPEED);
+            win::NET_ADAPTER_LINK_LAYER_CAPABILITIES_INIT(crate::LINK_SPEED, crate::LINK_SPEED);
         unsafe {
             win::NetAdapterSetLinkLayerCapabilities(adapter_handle, &link_layer_capabilities)
         };
-        unsafe { win::NetAdapterSetLinkLayerMtuSize(adapter_handle, MAX_FRAME_DATA_SIZE) };
+        unsafe { win::NetAdapterSetLinkLayerMtuSize(adapter_handle, crate::PLAIN_FRAME_DATA_SIZE) };
         let packet_filter = win::NET_ADAPTER_PACKET_FILTER_CAPABILITIES_INIT(
             win::NET_PACKET_FILTER_FLAGS::NetPacketFilterFlagDirected
                 | win::NET_PACKET_FILTER_FLAGS::NetPacketFilterFlagMulticast
@@ -53,7 +52,7 @@ pub extern "system" fn evt_device_prepare_hardware(
         unsafe { win::NetAdapterSetCurrentLinkLayerAddress(adapter_handle, &link_layer_address) };
         let tx_capabilities = win::NET_ADAPTER_TX_CAPABILITIES_INIT(1);
         let rx_capabilities = win::NET_ADAPTER_RX_CAPABILITIES_INIT_SYSTEM_MANAGED(
-            mem::size_of::<adapter::VEthFrame>(),
+            mem::size_of::<VEthCipherFrame>(),
             1,
         );
         unsafe {

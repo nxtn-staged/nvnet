@@ -144,7 +144,7 @@ impl Icmpv6Header {
 }
 
 #[repr(C)]
-pub struct Layer2Icmpv6Header {
+pub struct L2Icmpv6Header {
     pub eth: EthHeader,
     pub ipv6: Ipv6Header,
     pub icmpv6: Icmpv6Header,
@@ -171,7 +171,7 @@ impl Icmpv6NsHeader {
 }
 
 #[repr(C)]
-pub struct Layer2Icmpv6NsHeader {
+pub struct L2Icmpv6NsHeader {
     pub eth: EthHeader,
     pub ipv6: Ipv6Header,
     pub icmpv6_ns: Icmpv6NsHeader,
@@ -198,7 +198,7 @@ impl Icmpv6NaHeader {
 }
 
 #[repr(C)]
-pub struct Layer2Icmpv6NaHeader {
+pub struct L2Icmpv6NaHeader {
     pub eth: EthHeader,
     pub ipv6: Ipv6Header,
     pub icmpv6_na: Icmpv6NaHeader,

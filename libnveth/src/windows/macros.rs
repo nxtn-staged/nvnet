@@ -67,10 +67,11 @@ macro_rules! c_type {
     };
 }
 
-macro_rules! declare_handle {
+macro_rules! win_handle {
     ($name:ident) => {
         c_type!(
-            pub struct $name(*mut core::ffi::c_void);
+            #[derive(Default)]
+            pub struct $name(isize);
         );
     };
 }

@@ -1,22 +1,22 @@
-use core::{ffi::c_void, ptr};
+use core::ffi::c_void;
 
 pub type PVOID = *mut c_void;
 
 c_type!(
-    #[derive(Debug)]
-    pub struct HANDLE(*mut c_void);
+    #[derive(Debug, Default)]
+    pub struct HANDLE(isize);
 );
-
-impl Default for HANDLE {
-    fn default() -> Self {
-        Self(ptr::null_mut())
-    }
-}
 
 c_type!(
     #[derive(Debug, PartialEq, Eq)]
     pub struct NTSTATUS(pub i32);
 );
+
+impl From<i32> for NTSTATUS {
+    fn from(status: i32) -> Self {
+        Self(status)
+    }
+}
 
 pub fn NT_SUCCESS(status: NTSTATUS) -> bool {
     status.0 >= 0

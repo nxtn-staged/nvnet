@@ -1,17 +1,14 @@
 use core::ptr;
 
-use crate::{
-    ext::AsPtrExt,
-    windows::{
-        km::{
-            ntddk::IO_NO_INCREMENT,
-            wdm::{
-                KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, KEVENT, KPROCESSOR_MODE,
-                KWAIT_REASON,
-            },
+use crate::windows::{
+    km::{
+        ntddk::IO_NO_INCREMENT,
+        wdm::{
+            KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, KEVENT, KPROCESSOR_MODE,
+            KWAIT_REASON,
         },
-        shared::{ntdef::EVENT_TYPE, ntstatus::STATUS_SUCCESS},
     },
+    shared::{ntdef::EVENT_TYPE, ntstatus::STATUS_SUCCESS},
 };
 
 pub struct AutoEvent(KEVENT);
@@ -28,7 +25,7 @@ impl AutoEvent {
     pub fn wait(&self) {
         let status = unsafe {
             KeWaitForSingleObject(
-                self.0.to_mut_ptr().cast(),
+                &self.0 as *const _ as *mut _,
                 KWAIT_REASON::Executive,
                 KPROCESSOR_MODE::KernelMode,
                 false,
@@ -39,6 +36,6 @@ impl AutoEvent {
     }
 
     pub fn set(&self) {
-        unsafe { KeSetEvent(self.0.to_mut_ptr().cast(), IO_NO_INCREMENT as _, false) };
+        unsafe { KeSetEvent(&self.0 as *const _ as *mut _, IO_NO_INCREMENT.into(), false) };
     }
 }

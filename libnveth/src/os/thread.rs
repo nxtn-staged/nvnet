@@ -1,19 +1,20 @@
-use core::{default::default, mem::MaybeUninit, ptr, unreachable};
+use core::{
+    default::default,
+    mem::{self, MaybeUninit},
+    ptr, unreachable,
+};
 
-use crate::{
-    ext::AsPtrExt,
-    windows::{
-        km::{
-            ntifs::ZwWaitForSingleObject,
-            wdm::{
-                PsCreateSystemThread, PsTerminateSystemThread, ZwClose, PKSTART_ROUTINE,
-                THREAD_ALL_ACCESS,
-            },
+use crate::windows::{
+    km::{
+        ntifs::ZwWaitForSingleObject,
+        wdm::{
+            PsCreateSystemThread, PsTerminateSystemThread, ZwClose, PKSTART_ROUTINE,
+            THREAD_ALL_ACCESS,
         },
-        shared::{
-            ntdef::{HANDLE, NTSTATUS, NT_SUCCESS, PVOID},
-            ntstatus::STATUS_SUCCESS,
-        },
+    },
+    shared::{
+        ntdef::{HANDLE, NTSTATUS, NT_SUCCESS, PVOID},
+        ntstatus::STATUS_SUCCESS,
     },
 };
 
@@ -46,7 +47,12 @@ impl Thread {
         start: extern "system" fn(start_context: &mut T),
         start_context: &'static mut T,
     ) -> Result<Self, NTSTATUS> {
-        unsafe { Self::spawn(Some(*start.unsafe_as()), start_context.as_mut_ptr().cast()) }
+        unsafe {
+            Self::spawn(
+                Some(mem::transmute(start)),
+                (start_context as *mut T).cast(),
+            )
+        }
     }
 
     pub fn exit(status: NTSTATUS) -> ! {
@@ -63,6 +69,6 @@ impl Thread {
 impl Drop for Thread {
     fn drop(&mut self) {
         let status = unsafe { ZwClose(self.0) };
-        assert_eq!(status, STATUS_SUCCESS);
+        debug_assert_eq!(status, STATUS_SUCCESS);
     }
 }

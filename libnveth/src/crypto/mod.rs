@@ -1,2 +1,1 @@
-pub mod chacha20;
-pub mod poly1305;
+pub mod aes_gcm;

@@ -8,9 +8,10 @@ pub use crate::windows::{
         wsk::*,
     },
     shared::{
+        bcrypt::*,
         netcx::shared::net::{
-            extension::*, fragment::*, packet::*, ring::*, ringcollection::*, virtualaddress::*,
-            virtualaddresstypes::*,
+            extension::*, fragment::*, mdl::*, mdltypes::*, packet::*, ring::*, ringcollection::*,
+            virtualaddress::*, virtualaddresstypes::*,
         },
         ntdef::*,
         ntstatus::*,

@@ -1,4 +1,4 @@
-use sal::*;
+use libnveth_macros::*;
 
 use crate::windows::{
     km::netcx::kmdf::adapter::{

@@ -6,9 +6,10 @@ use core::{
     ptr,
 };
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::{
+    crypto::aes_gcm::AesGcm,
     list::BufPool,
     net::MacAddr,
     peer::Peer,
@@ -20,7 +21,6 @@ use crate::{
         prelude as win,
         shared::ifdef::{NET_IF_MEDIA_CONNECT_STATE, NET_IF_MEDIA_DUPLEX_STATE},
     },
-    LINK_SPEED, MAX_FRAME_DATA_SIZE,
 };
 
 pub struct VEthAdapter {
@@ -38,7 +38,7 @@ pub struct VEthAdapter {
     pub socket: UdpSocket,
     request: IoRequest,
 
-    pub rx_buf_pool: BufPool<VEthFrame>,
+    pub rx_buf_pool: BufPool<VEthCipherFrame>,
 }
 
 impl VEthAdapter {
@@ -119,7 +119,7 @@ impl VEthAdapter {
 
     pub fn set_connect_state(&mut self, connected: bool) {
         let link_state = win::NET_ADAPTER_LINK_STATE_INIT(
-            LINK_SPEED,
+            crate::LINK_SPEED,
             if connected {
                 NET_IF_MEDIA_CONNECT_STATE::MediaConnectStateConnected
             } else {
@@ -242,8 +242,27 @@ pub fn veth_get_adapter_ptr_context_type() -> *const win::WDF_OBJECT_CONTEXT_TYP
     unsafe { &WDF_VETH_ADAPTER_PTR_TYPE_INFO }
 }
 
-pub struct VEthFrame {
-    pub data: [u8; MAX_FRAME_DATA_SIZE as _],
+#[repr(C)]
+pub struct VEthPlainFrame {
+    pub data: [u8; crate::PLAIN_FRAME_DATA_SIZE as _],
+}
+
+#[repr(C)]
+pub struct VEthCipherFrameHeader {
+    pub nonce: [u8; AesGcm::NONCE_SIZE12],
+    pub tag: [u8; AesGcm::TAG_SIZE16],
+}
+
+#[repr(C)]
+pub struct VEthCipherFrame {
+    pub header: VEthCipherFrameHeader,
+    pub data: [u8; crate::CIPHER_FRAME_DATA_SIZE as _],
+}
+
+#[repr(C)]
+pub union VEthFrame {
+    pub plain: VEthPlainFrame,
+    pub cipher: VEthCipherFrame,
 }
 
 #[irql_requires_max(PASSIVE_LEVEL)]

@@ -6,19 +6,9 @@ use core::{
 };
 
 use crate::{
-    ext::AsPtrExt,
     init::{InitGuard, ManuallyInit},
     os::event::AutoEvent,
-    windows::{
-        prelude as win,
-        shared::{
-            ntdef::{NTSTATUS, NT_SUCCESS, PVOID},
-            ntstatus::{
-                STATUS_CANCELLED, STATUS_INSUFFICIENT_RESOURCES, STATUS_MORE_PROCESSING_REQUIRED,
-                STATUS_PENDING, STATUS_SUCCESS,
-            },
-        },
-    },
+    windows::prelude as win,
 };
 
 // resident
@@ -34,13 +24,13 @@ static mut REGISTRATION: ManuallyInit<SocketRegistration> = ManuallyInit::uninit
 struct SocketRegistration(win::WSK_REGISTRATION);
 
 impl SocketRegistration {
-    unsafe fn init(uninit: *mut Self) -> Result<(), NTSTATUS> {
+    unsafe fn init(uninit: *mut Self) -> Result<(), win::NTSTATUS> {
         let client_npi = win::WSK_CLIENT_NPI {
             dispatch: &CLIENT_DISPATCH,
             ..default()
         };
         let status = win::WskRegister(&client_npi, ptr::raw_mut!((*uninit).0));
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status_unsafe!("WskRegister", status);
             return Err(status);
         }
@@ -57,7 +47,7 @@ impl Drop for SocketRegistration {
 pub struct UdpSocket(*const win::WSK_SOCKET);
 
 impl UdpSocket {
-    pub fn register() -> Result<(), NTSTATUS> {
+    pub fn register() -> Result<(), win::NTSTATUS> {
         unsafe { REGISTRATION.init(|uninit| SocketRegistration::init(uninit)) }
     }
 
@@ -65,7 +55,7 @@ impl UdpSocket {
         unsafe { REGISTRATION.drop() }
     }
 
-    pub fn new(request: &mut IoRequest) -> Result<UdpSocketInitGuard, NTSTATUS> {
+    pub fn new(request: &mut IoRequest) -> Result<UdpSocketInitGuard, win::NTSTATUS> {
         let registration = unsafe { REGISTRATION.get() };
         let mut provider_npi = MaybeUninit::uninit();
         let status = unsafe {
@@ -75,7 +65,7 @@ impl UdpSocket {
                 provider_npi.as_mut_ptr(),
             )
         };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("WskCaptureProviderNPI", status);
             return Err(status);
         }
@@ -99,7 +89,7 @@ impl UdpSocket {
                 request.reuse()?,
             );
             let status = request.wait(status);
-            if !NT_SUCCESS(status) {
+            if !win::NT_SUCCESS(status) {
                 Err(status)
             } else {
                 Ok(UdpSocketInitGuard {
@@ -128,7 +118,7 @@ impl UdpSocket {
         option: u32,
         level: win::IPPROTO,
         value: bool,
-    ) -> Result<(), NTSTATUS> {
+    ) -> Result<(), win::NTSTATUS> {
         let value: u32 = if value { 1 } else { 0 };
         let dispatch = self.basic_dispatch();
         let wsk_control_socket = dispatch.wsk_control_socket.unwrap();
@@ -138,14 +128,14 @@ impl UdpSocket {
             option,
             level,
             mem::size_of_val(&value),
-            value.as_ptr().cast(),
+            (&value as *const u32).cast(),
             0,
             ptr::null_mut(),
             ptr::null_mut(),
             request.reuse()?,
         );
         let status = request.wait(status);
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             Err(status)
         } else {
             Ok(())
@@ -156,12 +146,17 @@ impl UdpSocket {
         &mut self,
         request: &mut IoRequest,
         addr: &win::SOCKADDR_IN6,
-    ) -> Result<(), NTSTATUS> {
+    ) -> Result<(), win::NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_bind = dispatch.wsk_bind.unwrap();
-        let status = wsk_bind(self.0, addr.as_ptr().cast(), 0, request.reuse()?);
+        let status = wsk_bind(
+            self.0,
+            (addr as *const win::SOCKADDR_IN6).cast(),
+            0,
+            request.reuse()?,
+        );
         let status = request.wait(status);
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             Err(status)
         } else {
             Ok(())
@@ -173,20 +168,20 @@ impl UdpSocket {
         request: &mut IoRequest,
         buf: &win::WSK_BUF,
         addr: &win::SOCKADDR_IN6,
-    ) -> Result<usize, NTSTATUS> {
+    ) -> Result<usize, win::NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_send_to = dispatch.wsk_send_to.unwrap();
         let status = wsk_send_to(
             self.0,
             buf,
             0,
-            addr.as_ptr().cast(),
+            (addr as *const win::SOCKADDR_IN6).cast(),
             0,
             ptr::null(),
             request.reuse()?,
         );
         let status = request.wait(status);
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("wsk_send_to", status);
             Err(status)
         } else {
@@ -199,7 +194,7 @@ impl UdpSocket {
         request: &mut IoRequest,
         buf: &win::WSK_BUF,
         addr: &mut MaybeUninit<win::SOCKADDR_IN6>,
-    ) -> Result<usize, NTSTATUS> {
+    ) -> Result<usize, win::NTSTATUS> {
         let dispatch = self.datagram_dispatch();
         let wsk_receive_from = dispatch.wsk_receive_from.unwrap();
         let status = wsk_receive_from(
@@ -213,7 +208,7 @@ impl UdpSocket {
             request.reuse()?,
         );
         let status = request.wait(status);
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("wsk_receive_from", status);
             Err(status)
         } else {
@@ -221,12 +216,12 @@ impl UdpSocket {
         }
     }
 
-    pub fn close(&mut self, request: &mut IoRequest) -> Result<(), NTSTATUS> {
+    pub fn close(&mut self, request: &mut IoRequest) -> Result<(), win::NTSTATUS> {
         let dispatch = self.basic_dispatch();
         let wsk_close_socket = dispatch.wsk_close_socket.unwrap();
         let status = wsk_close_socket(self.0, request.reuse()?);
         let status = request.wait(status);
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             Err(status)
         } else {
             Ok(())
@@ -269,18 +264,30 @@ impl<'a> UdpSocketWorker<'a> {
 
     pub fn send_to(
         &mut self,
-        buf: &win::WSK_BUF,
+        mdl: *mut win::MDL,
+        length: usize,
         addr: &win::SOCKADDR_IN6,
-    ) -> Result<usize, NTSTATUS> {
-        self.socket.send_to(&mut self.request, buf, addr)
+    ) -> Result<usize, win::NTSTATUS> {
+        let buf = win::WSK_BUF {
+            mdl,
+            offset: 0,
+            length,
+        };
+        self.socket.send_to(&mut self.request, &buf, addr)
     }
 
     pub fn recv_from(
         &mut self,
-        buf: &win::WSK_BUF,
+        mdl: *mut win::MDL,
+        length: usize,
         addr: &mut MaybeUninit<win::SOCKADDR_IN6>,
-    ) -> Result<usize, NTSTATUS> {
-        self.socket.recv_from(&mut self.request, buf, addr)
+    ) -> Result<usize, win::NTSTATUS> {
+        let buf = win::WSK_BUF {
+            mdl,
+            offset: 0,
+            length,
+        };
+        self.socket.recv_from(&mut self.request, &buf, addr)
     }
 }
 
@@ -292,10 +299,10 @@ pub struct IoRequest {
 }
 
 impl IoRequest {
-    pub unsafe fn init(uninit: *mut Self) -> Result<InitGuard<Self>, NTSTATUS> {
+    pub unsafe fn init(uninit: *mut Self) -> Result<InitGuard<Self>, win::NTSTATUS> {
         let irp = win::IoAllocateIrp(1, false);
         if irp.is_null() {
-            Err(STATUS_INSUFFICIENT_RESOURCES)
+            Err(win::STATUS_INSUFFICIENT_RESOURCES)
         } else {
             ptr::raw_mut!((*uninit).irp).write(irp);
             AutoEvent::init(ptr::raw_mut!((*uninit).event));
@@ -305,18 +312,18 @@ impl IoRequest {
         }
     }
 
-    fn reuse(&mut self) -> Result<*mut win::IRP, NTSTATUS> {
+    fn reuse(&mut self) -> Result<*mut win::IRP, win::NTSTATUS> {
         if self.canceled.load(Relaxed) {
-            return Err(STATUS_CANCELLED);
+            return Err(win::STATUS_CANCELLED);
         }
 
         assert!(!self.pending);
-        unsafe { win::IoReuseIrp(self.irp, STATUS_SUCCESS) };
+        unsafe { win::IoReuseIrp(self.irp, win::STATUS_SUCCESS) };
         unsafe {
             win::IoSetCompletionRoutine(
                 self.irp,
                 Some(Self::complete),
-                self.as_mut_ptr().cast(),
+                (self as *mut Self).cast(),
                 true,
                 true,
                 true,
@@ -326,9 +333,9 @@ impl IoRequest {
         Ok(self.irp)
     }
 
-    fn wait(&mut self, status: NTSTATUS) -> NTSTATUS {
+    fn wait(&mut self, status: win::NTSTATUS) -> win::NTSTATUS {
         assert!(self.pending);
-        let result = if status != STATUS_PENDING {
+        let result = if status != win::STATUS_PENDING {
             status
         } else {
             self.event.wait();
@@ -355,12 +362,12 @@ impl IoRequest {
     extern "system" fn complete(
         _device_object: *const win::DEVICE_OBJECT,
         _irp: *const win::IRP,
-        context: PVOID,
-    ) -> NTSTATUS {
+        context: win::PVOID,
+    ) -> win::NTSTATUS {
         let request = unsafe { context.cast::<Self>().as_ref().unwrap() };
         request.event.set();
 
-        STATUS_MORE_PROCESSING_REQUIRED
+        win::STATUS_MORE_PROCESSING_REQUIRED
     }
 }
 

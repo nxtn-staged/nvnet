@@ -22,7 +22,6 @@ mod allocator;
 mod crypto;
 mod device;
 mod driver;
-mod ext;
 mod init;
 mod ioctl;
 mod list;
@@ -38,28 +37,24 @@ mod worker;
 
 extern crate alloc;
 
-use core::ptr;
+use core::{mem, ptr};
 
-use sal::*;
+use libnveth_macros::*;
 
-use crate::{
-    socket::UdpSocket,
-    windows::{
-        prelude as win,
-        shared::{
-            ntdef::{NTSTATUS, NT_SUCCESS, UNICODE_STRING},
-            ntstatus::STATUS_SUCCESS,
-        },
-    },
-};
+use crate::{adapter::VEthCipherFrameHeader, socket::UdpSocket, windows::prelude as win};
 
-const MAX_FRAME_DATA_SIZE: u32 = {
+// 1418
+const PLAIN_FRAME_DATA_SIZE: u32 = {
     const MAX_ETH_MTU_SIZE: u32 = 1500;
     const MAX_IP_HEADER_SIZE: u32 = 60;
     const MAX_UDP_HEADER_SIZE: u32 = 8;
     const MAX_ETH_HEADER_SIZE: u32 = 14;
     MAX_ETH_MTU_SIZE - MAX_IP_HEADER_SIZE - MAX_UDP_HEADER_SIZE - MAX_ETH_HEADER_SIZE
-}; // 1418
+};
+
+// 1390
+const CIPHER_FRAME_DATA_SIZE: u32 =
+    PLAIN_FRAME_DATA_SIZE - mem::size_of::<VEthCipherFrameHeader>() as u32;
 
 const LINK_SPEED: u64 = 10_000_000_000; // 10.0 Gbps
 
@@ -67,8 +62,8 @@ const LINK_SPEED: u64 = 10_000_000_000; // 10.0 Gbps
 #[irql_requires_max(PASSIVE_LEVEL)]
 pub extern "system" fn DriverEntry(
     driver_object: *const win::DRIVER_OBJECT,
-    registry_path: *const UNICODE_STRING,
-) -> NTSTATUS {
+    registry_path: *const win::UNICODE_STRING,
+) -> win::NTSTATUS {
     trace_entry!("DriverEntry");
 
     let status = (|| {
@@ -83,14 +78,14 @@ pub extern "system" fn DriverEntry(
                 ptr::null_mut(),
             )
         };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("WdfDriverCreate", status);
             return status;
         }
         if let Err(status) = UdpSocket::register() {
             return status;
         }
-        STATUS_SUCCESS
+        win::STATUS_SUCCESS
     })();
 
     trace_exit_status!("DriverEntry", status);

@@ -1,6 +1,6 @@
 use core::{mem, ptr, usize};
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::windows::shared::{
     dpfilter::DPFLTR_TYPE,
@@ -128,9 +128,6 @@ c_type!(
         byte_offset: u32,
     }
 );
-
-pub const MDL_MAPPED_TO_SYSTEM_VA: i16 = 0x0001;
-pub const MDL_SOURCE_IS_NONPAGED_POOL: i16 = 0x0004;
 
 c_type!(
     pub struct DISPATCHER_HEADER_u_s {
@@ -362,17 +359,6 @@ pub unsafe fn MmInitializeMdl(
     ptr::raw_mut!((*memory_descriptor_list).start_va).write(PAGE_ALIGN(base_va));
     ptr::raw_mut!((*memory_descriptor_list).byte_offset).write(BYTE_OFFSET(base_va));
     ptr::raw_mut!((*memory_descriptor_list).byte_count).write(length as _);
-}
-
-#[irql_requires_max(DISPATCH_LEVEL)]
-pub fn MmGetSystemAddressForMdlSafe(mdl: *mut MDL, _priority: u32) -> PVOID {
-    unsafe {
-        if (*mdl).mdl_flags & (MDL_MAPPED_TO_SYSTEM_VA | MDL_SOURCE_IS_NONPAGED_POOL) != 0 {
-            (*mdl).mapped_system_va
-        } else {
-            todo!()
-        }
-    }
 }
 
 extern "system" {

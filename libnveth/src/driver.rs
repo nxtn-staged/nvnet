@@ -3,26 +3,20 @@ use core::{
     ptr,
 };
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::{
     adapter::{self, VEthAdapter, VEthAdapterPtr},
     device,
     socket::UdpSocket,
-    windows::{
-        prelude as win,
-        shared::{
-            ntdef::{NTSTATUS, NT_SUCCESS, UNICODE_STRING},
-            ntstatus::{STATUS_INSUFFICIENT_RESOURCES, STATUS_SUCCESS},
-        },
-    },
+    windows::prelude as win,
 };
 
 static mut DEVICE_INDEX: u16 = 0;
 
-fn unicode_string_init(chars: &mut [u16]) -> UNICODE_STRING {
+fn unicode_string_init(chars: &mut [u16]) -> win::UNICODE_STRING {
     let size = mem::size_of_val(chars) as _;
-    UNICODE_STRING {
+    win::UNICODE_STRING {
         length: size,
         maximum_length: size,
         buffer: chars.as_mut_ptr(),
@@ -33,12 +27,12 @@ fn unicode_string_init(chars: &mut [u16]) -> UNICODE_STRING {
 pub extern "system" fn evt_driver_device_add(
     _driver: win::WDFDRIVER,
     mut device_init: *mut win::WDFDEVICE_INIT,
-) -> NTSTATUS {
+) -> win::NTSTATUS {
     trace_entry!("evt_driver_device_add");
 
     let status = (|| {
         let status = unsafe { win::NetDeviceInitConfig(device_init) };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("NetDeviceInitConfig", status);
             return status;
         }
@@ -58,14 +52,14 @@ pub extern "system" fn evt_driver_device_add(
         let status = unsafe {
             win::WdfDeviceCreate(&mut device_init, &device_attributes, device.as_mut_ptr())
         };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("WdfDeviceCreate", status);
             return status;
         }
         let device = unsafe { device.assume_init() };
         let adapter_init = unsafe { win::NetAdapterInitAllocate(device) };
         if adapter_init.is_null() {
-            let status = STATUS_INSUFFICIENT_RESOURCES;
+            let status = win::STATUS_INSUFFICIENT_RESOURCES;
             trace_exit_status!("NetAdapterInitAllocate", status);
             return status;
         }
@@ -85,14 +79,14 @@ pub extern "system" fn evt_driver_device_add(
                     adapter_handle.as_mut_ptr(),
                 )
             };
-            if !NT_SUCCESS(status) {
+            if !win::NT_SUCCESS(status) {
                 trace_exit_status!("NetAdapterCreate", status);
                 return status;
             }
-            STATUS_SUCCESS
+            win::STATUS_SUCCESS
         })();
         unsafe { win::NetAdapterInitFree(adapter_init) };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             return status;
         }
         let adapter_handle = unsafe { adapter_handle.assume_init() };
@@ -104,7 +98,7 @@ pub extern "system" fn evt_driver_device_add(
         queue_config.evt_io_device_control = Some(device::evt_wdf_io_queue_io_device_control);
         let status =
             unsafe { win::WdfIoQueueCreate(device, &queue_config, ptr::null(), ptr::null_mut()) };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("WdfIoQueueCreate", status);
             return status;
         }
@@ -112,12 +106,12 @@ pub extern "system" fn evt_driver_device_add(
         *symbolic_link_name.last_mut().unwrap() += unsafe { DEVICE_INDEX };
         let symbolic_link_name = unicode_string_init(&mut symbolic_link_name);
         let status = unsafe { win::WdfDeviceCreateSymbolicLink(device, &symbolic_link_name) };
-        if !NT_SUCCESS(status) {
+        if !win::NT_SUCCESS(status) {
             trace_exit_status!("WdfDeviceCreateSymbolicLink", status);
             return status;
         }
         unsafe { DEVICE_INDEX += 1 };
-        STATUS_SUCCESS
+        win::STATUS_SUCCESS
     })();
 
     trace_exit_status!("evt_driver_device_add", status);

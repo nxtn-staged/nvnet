@@ -1,6 +1,6 @@
 use core::{default::default, mem};
 
-use sal::*;
+use libnveth_macros::*;
 
 use crate::windows::{
     km::wdm::DRIVER_OBJECT,
