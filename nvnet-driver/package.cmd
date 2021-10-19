@@ -1,0 +1,1 @@
+"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe" "..\..\nvnet-driver-package\nvnet-driver-package.sln" -t:Rebuild -p:Platform=x64 -p:Configuration=Release

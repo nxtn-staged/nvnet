@@ -1,0 +1,19 @@
+[package]
+name = "nvnet-driver"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+lto = "thin" # work around unresolved external symbol _fltused
+
+[profile.release]
+panic = "abort"
+lto = "thin" # work around unresolved external symbol _fltused
+debug = true
+
+[dependencies]
+nvnet-shared = { path = "../nvnet-shared" }
