@@ -5,3 +5,7 @@ edition = "2021"
 
 [profile.release]
 debug = true
+
+[dependencies]
+crossbeam-channel = "0.5"
+libc = "0.2"
