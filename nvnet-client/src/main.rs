@@ -48,6 +48,7 @@ impl LocalEndpoint {
 #[serde(rename_all = "kebab-case")]
 pub struct RemoteEndpoint {
     endpoint: Endpoint,
+    secret_key: Option<Key>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +72,24 @@ impl Endpoint {
             sin6_addr: addr,
             ..default()
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(try_from = "&str")]
+struct Key(Vec<u8>);
+
+impl TryFrom<&str> for Key {
+    type Error = base64::DecodeError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Self(base64::decode(value)?))
+    }
+}
+
+impl AsRef<[u8]> for Key {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -107,6 +126,10 @@ fn main() -> Result<(), MainError> {
     device.control_in(nvnet_shared::IOCTL_VNET_SET_LOCAL_ENDPOINT, local_addr)?;
     let remote_addr = config.remote.endpoint.to_raw_addr();
     device.control_in(nvnet_shared::IOCTL_VNET_SET_REMOTE_ENDPOINT, remote_addr)?;
+    if let Some(secret_key) = config.remote.secret_key {
+        let secret_key = secret_key.as_ref();
+        device.control_in_ref(nvnet_shared::IOCTL_VNET_SET_REMOTE_SECRET_KEY, secret_key)?;
+    }
     device.control_in(nvnet_shared::IOCTL_VNET_SET_CONNECT_STATE, true)?;
     Ok(())
 }

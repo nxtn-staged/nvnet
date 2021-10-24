@@ -164,7 +164,7 @@ fn bind(addr: SocketAddr) -> io::Result<UdpSocket> {
 
 fn start_tx(addr: SocketAddr, channel_rx: Receiver<Packet>) -> io::Result<!> {
     let socket = bind(addr)?;
-    for packet in channel_rx.iter() {
+    for packet in channel_rx {
         if let Err(err) = socket.send_to(&packet.buf[..packet.len], packet.addr) {
             eprintln!("{}", err);
         }

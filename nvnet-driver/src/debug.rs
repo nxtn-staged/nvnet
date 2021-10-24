@@ -17,7 +17,7 @@ pub trait ResultExt {
     fn context_exit(self, name: &'static str) -> Self;
 }
 
-impl ResultExt for Result<()> {
+impl<T> ResultExt for Result<T> {
     fn context_exit(self, name: &'static str) -> Self {
         if let Err(status) = self {
             trace_println!("%.*s - 0x%08x", name.len() as i32, name.as_ptr(), status);

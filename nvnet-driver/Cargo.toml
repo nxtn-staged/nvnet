@@ -16,4 +16,6 @@ lto = "thin" # work around unresolved external symbol _fltused
 debug = true
 
 [dependencies]
+winapi = { version = "0.3.9", features = ["impl-default", "bcrypt"] }
+
 nvnet-shared = { path = "../nvnet-shared" }

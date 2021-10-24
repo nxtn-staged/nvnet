@@ -16,6 +16,12 @@ impl<T: Next> LinkedIter<'_, T> {
     }
 }
 
+impl<T: Next> Clone for LinkedIter<'_, T> {
+    fn clone(&self) -> Self {
+        Self { ..*self }
+    }
+}
+
 impl<'a, T: Next> Iterator for LinkedIter<'a, T> {
     type Item = &'a mut T;
 

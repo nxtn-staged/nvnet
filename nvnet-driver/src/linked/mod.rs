@@ -1,11 +1,15 @@
 mod iter;
 mod queue;
 
-pub use self::{iter::LinkedIter, queue::LinkedQueue};
+pub use self::{
+    iter::LinkedIter,
+    queue::{LinkedCountedQueue, LinkedQueue},
+};
 
 use crate::windows::km::{
     ndis::nbl::{NET_BUFFER, NET_BUFFER_LIST},
-    wsk::WSK_BUF_LIST,
+    wdm::MDL,
+    wsk::{WSK_BUF_LIST, WSK_DATAGRAM_INDICATION},
 };
 
 pub trait Next {
@@ -35,6 +39,26 @@ impl Next for NET_BUFFER_LIST {
 }
 
 impl Next for WSK_BUF_LIST {
+    fn next(&self) -> *mut Self {
+        self.Next
+    }
+
+    fn next_mut(&mut self) -> &mut *mut Self {
+        &mut self.Next
+    }
+}
+
+impl Next for WSK_DATAGRAM_INDICATION {
+    fn next(&self) -> *mut Self {
+        self.Next
+    }
+
+    fn next_mut(&mut self) -> &mut *mut Self {
+        &mut self.Next
+    }
+}
+
+impl Next for MDL {
     fn next(&self) -> *mut Self {
         self.Next
     }

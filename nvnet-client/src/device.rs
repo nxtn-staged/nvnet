@@ -28,12 +28,17 @@ impl Device {
     }
 
     pub fn control_in<T>(&self, control_code: u32, val: T) -> Result<()> {
+        self.control_in_ref(control_code, &val)?;
+        Ok(())
+    }
+
+    pub fn control_in_ref<T: ?Sized>(&self, control_code: u32, val: &T) -> Result<()> {
         unsafe {
             DeviceIoControl(
                 self.0,
                 control_code,
-                &val as *const _ as *const _,
-                mem::size_of_val(&val) as u32,
+                val as *const _ as *const _,
+                mem::size_of_val(val) as u32,
                 ptr::null_mut(),
                 0,
                 ptr::null_mut(),

@@ -32,6 +32,16 @@ impl OkExt for NTSTATUS {
     }
 }
 
+impl OkExt for i32 {
+    fn ok(self) -> Result<()> {
+        if self >= 0 {
+            Ok(())
+        } else {
+            Err(NTSTATUS(self))
+        }
+    }
+}
+
 pub trait UnicodeStringExt {
     unsafe fn new(chars: &mut [u16]) -> Self;
 }

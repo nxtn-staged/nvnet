@@ -1,24 +1,27 @@
-use core::default::default;
+use core::{default::default, ptr::NonNull};
 
-use crate::windows::{
-    km::{
-        ndis::{
-            nbl::NET_BUFFER_LIST,
-            nblapi::{
-                NdisAllocateNetBufferAndNetBufferList, NdisAllocateNetBufferListPool,
-                NdisFreeNetBufferList, NdisFreeNetBufferListPool,
-                NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
-                NET_BUFFER_LIST_POOL_PARAMETERS, NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
+use crate::{
+    debug::ResultExt,
+    windows::{
+        km::{
+            ndis::{
+                nbl::NET_BUFFER_LIST,
+                nblapi::{
+                    NdisAllocateNetBufferAndNetBufferList, NdisAllocateNetBufferListPool,
+                    NdisFreeNetBufferList, NdisFreeNetBufferListPool,
+                    NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
+                    NET_BUFFER_LIST_POOL_PARAMETERS, NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
+                },
             },
+            wdm::MDL,
         },
-        wdm::MDL,
+        shared::{
+            ndis::{objectheader::NDIS_OBJECT_HEADER, types::NDIS_HANDLE},
+            ntddndis::{NDIS_OBJECT_TYPE_DEFAULT, NDIS_PROTOCOL_ID_DEFAULT},
+            ntstatus::STATUS_INSUFFICIENT_RESOURCES,
+        },
+        Result,
     },
-    shared::{
-        ndis::{objectheader::NDIS_OBJECT_HEADER, types::NDIS_HANDLE},
-        ntddndis::{NDIS_OBJECT_TYPE_DEFAULT, NDIS_PROTOCOL_ID_DEFAULT},
-        ntstatus::STATUS_INSUFFICIENT_RESOURCES,
-    },
-    Result,
 };
 
 pub struct NblPool(NDIS_HANDLE);
@@ -38,9 +41,9 @@ impl NblPool {
         };
         let pool_handle =
             unsafe { NdisAllocateNetBufferListPool(adapter_handle, &mut pool_params) };
-        if pool_handle.0.is_null() {
-            return Err(STATUS_INSUFFICIENT_RESOURCES);
-        }
+        NonNull::new(pool_handle.0)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+            .context_exit("NdisAllocateNetBufferListPool")?;
         Ok(Self(pool_handle))
     }
 
@@ -51,9 +54,9 @@ impl NblPool {
         length: usize,
     ) -> Result<*mut NET_BUFFER_LIST> {
         let nbl = NdisAllocateNetBufferAndNetBufferList(self.0, 0, 0, mdl, offset, length);
-        if nbl.is_null() {
-            return Err(STATUS_INSUFFICIENT_RESOURCES);
-        }
+        NonNull::new(nbl)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+            .context_exit("NdisAllocateNetBufferAndNetBufferList")?;
         Ok(nbl)
     }
 

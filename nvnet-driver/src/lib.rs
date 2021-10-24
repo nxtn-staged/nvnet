@@ -14,8 +14,10 @@
 mod debug;
 
 mod adapter;
+mod crypto;
 mod device;
 mod driver;
+mod fragment;
 mod linked;
 mod ndis;
 mod os;
@@ -33,11 +35,12 @@ use core::{
 };
 
 use crate::{
-    adapter::Adapter,
+    adapter::{Adapter, CipherFrameHeader},
     debug::ResultExt,
     device::{Device, DeviceHandle},
     driver::{Driver, DriverHandle},
-    linked::{LinkedIter, LinkedQueue},
+    fragment::FragmentIter,
+    linked::{LinkedCountedQueue, LinkedIter},
     ndis::NblChain,
     os::request::Request,
     windows::{
@@ -152,7 +155,6 @@ macro_rules! utf16 {
             chars[i] = BYTES[i] as u16;
             i += 1;
         }
-
         chars
     }};
 }
@@ -680,6 +682,11 @@ extern "system" fn evt_io_device_control(
             unsafe { adapter.set_remote_endpoint(endpoint.read()) };
             Ok(())
         }
+        nvnet_shared::IOCTL_VNET_SET_REMOTE_SECRET_KEY => {
+            let secret_key = unsafe { Request::retrieve_input_val::<[u8; 16]>(irp)? };
+            unsafe { adapter.set_remote_secret_key(secret_key.read())? };
+            Ok(())
+        }
         _ => Err(STATUS_NOT_SUPPORTED),
     })()
     .into();
@@ -695,42 +702,62 @@ extern "system" fn evt_recv_from(
     let adapter = unsafe { &*socket_context.cast::<Adapter>() };
     let at_dispatch = (flags & WSK_FLAG_AT_DISPATCH_LEVEL) != 0;
     let mut nbl_queue = MaybeUninit::uninit();
-    unsafe { LinkedQueue::init(nbl_queue.as_mut_ptr()) };
+    unsafe { LinkedCountedQueue::init(nbl_queue.as_mut_ptr()) };
     let nbl_queue = unsafe { nbl_queue.assume_init_mut() };
-    let mut nbl_count = 0;
-    let mut datagram_chain = unsafe { datagram_chain.as_mut() };
-    while let Some(datagram) = datagram_chain {
-        let datagram_next = unsafe { datagram.Next.as_mut() };
+    let datagram_iter = unsafe { LinkedIter::new(datagram_chain) }; // r.a
+    for datagram in datagram_iter {
+        let discard = |datagram| {
+            let socket = unsafe { adapter.socket.as_ref().unwrap_unchecked() };
+            drop(socket.release(datagram));
+            adapter.rx_discards.fetch_add(1, Relaxed);
+        };
         datagram.Next = ptr::null_mut();
+        let WSK_BUF {
+            Mdl: mdl,
+            Offset: offset,
+            Length: length,
+        } = datagram.Buffer;
+        if length < adapter::MIN_FRAME_SIZE as usize || length > adapter::MAX_FRAME_SIZE as usize {
+            discard(datagram);
+            continue;
+        }
         let nbl = adapter.rx_queue.lock_fast(at_dispatch).dequeue();
         let nbl = unsafe { nbl.as_mut() };
-        match nbl {
+        let nbl = match nbl {
             None => {
-                let socket = unsafe { adapter.socket.as_ref().unwrap_unchecked() };
-                drop(socket.release(datagram));
-                adapter.rx_discards.fetch_add(1, Relaxed);
+                discard(datagram);
+                continue;
             }
-            Some(nbl) => {
-                let WSK_BUF {
-                    Mdl: mdl,
-                    Offset: offset,
-                    Length: length,
-                } = datagram.Buffer;
-                unsafe { *nbl.wsk_datagram_mut() = datagram };
-                let nb = nbl.first_net_buffer;
-                let nb = unsafe { &mut *nb };
-                nb.current_mdl = mdl;
-                nb.current_mdl_offset = offset;
-                nb.data_length = length as u32;
-                nb.mdl_chain = mdl;
-                nb.data_offset = offset;
-                unsafe { nbl_queue.enqueue(nbl) };
-                nbl_count += 1;
-                adapter.rx_bytes_unicast.fetch_add(length as u64, Relaxed);
-                adapter.rx_frames_unicast.fetch_add(1, Relaxed);
+            Some(nbl) => nbl,
+        };
+        if let Some(secret_key) = adapter.remote_secret_key.as_ref() {
+            let mut header = MaybeUninit::<CipherFrameHeader>::uninit();
+            let fragment_iter = unsafe { FragmentIter::from_wb(&datagram.Buffer) };
+            let res = unsafe { fragment_iter.split(header.as_mut_ptr()) };
+            let (header, fragment_iter) = match res {
+                Err(_) => {
+                    discard(datagram);
+                    continue;
+                }
+                Ok(val) => val,
+            };
+            let res = secret_key.decrypt_chain(&header.nonce, fragment_iter, &mut header.tag);
+            if res.is_err() {
+                discard(datagram);
+                continue;
             }
         }
-        datagram_chain = datagram_next;
+        unsafe { *nbl.wsk_datagram_mut() = datagram };
+        let nb = nbl.first_net_buffer;
+        let nb = unsafe { &mut *nb };
+        nb.current_mdl = mdl;
+        nb.current_mdl_offset = offset;
+        nb.data_length = length as u32;
+        nb.mdl_chain = mdl;
+        nb.data_offset = offset;
+        unsafe { nbl_queue.enqueue(nbl) };
+        adapter.rx_bytes_unicast.fetch_add(length as u64, Relaxed);
+        adapter.rx_frames_unicast.fetch_add(1, Relaxed);
     }
     let nbl_chain = unsafe { nbl_queue.chain() };
     if !nbl_chain.is_null() {
@@ -739,7 +766,7 @@ extern "system" fn evt_recv_from(
                 adapter.handle,
                 nbl_chain,
                 NDIS_DEFAULT_PORT_NUMBER,
-                nbl_count,
+                nbl_queue.count() as u32,
                 if at_dispatch {
                     NDIS_RECEIVE_FLAGS_DISPATCH_LEVEL
                 } else {

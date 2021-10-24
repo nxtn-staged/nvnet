@@ -6,7 +6,8 @@ use core::{
 };
 
 use crate::{
-    linked::{LinkedIter, LinkedQueue},
+    crypto::AesGcm,
+    linked::{LinkedCountedQueue, LinkedIter, LinkedQueue},
     ndis::NblPool,
     os::{
         memory::Lookaside,
@@ -51,17 +52,26 @@ const MAX_IP_HEADER_SIZE: u32 = 60;
 const MAX_UDP_HEADER_SIZE: u32 = 8;
 const MAX_ETH_HEADER_SIZE: u32 = 14;
 
-const MAX_FRAME_SIZE: u32 = MAX_ETH_MTU_SIZE - MAX_IP_HEADER_SIZE - MAX_UDP_HEADER_SIZE;
-const MAX_FRAME_HEADER_SIZE: u32 = 0;
+pub const MIN_FRAME_SIZE: u32 = MAX_ETH_HEADER_SIZE;
+pub const MAX_FRAME_SIZE: u32 = MAX_ETH_MTU_SIZE - MAX_IP_HEADER_SIZE - MAX_UDP_HEADER_SIZE; // 1432
 
-pub const MAX_FRAME_DATA_SIZE: u32 = MAX_FRAME_SIZE - MAX_FRAME_HEADER_SIZE;
-pub const MAX_FRAME_MTU_SIZE: u32 = MAX_FRAME_DATA_SIZE - MAX_ETH_HEADER_SIZE;
+pub const MAX_FRAME_DATA_SIZE: u32 = MAX_FRAME_SIZE; // 1432
+pub const MAX_FRAME_MTU_SIZE: u32 = MAX_FRAME_DATA_SIZE - MAX_ETH_HEADER_SIZE; // 1418
+
+const PLAIN_FRAME_HEADER_SIZE: u32 = 0;
+const PLAIN_FRAME_DATA_SIZE: u32 = MAX_FRAME_DATA_SIZE - PLAIN_FRAME_HEADER_SIZE; // 1432
+const PLAIN_FRAME_MTU_SIZE: u32 = MAX_FRAME_MTU_SIZE - PLAIN_FRAME_HEADER_SIZE; // 1418
+
+const CIPHER_FRAME_HEADER_SIZE: u32 = mem::size_of::<CipherFrameHeader>() as u32; // 28
+const CIPHER_FRAME_DATA_SIZE: u32 = PLAIN_FRAME_DATA_SIZE - CIPHER_FRAME_HEADER_SIZE; // 1404
+const CIPHER_FRAME_MTU_SIZE: u32 = PLAIN_FRAME_MTU_SIZE - CIPHER_FRAME_HEADER_SIZE; // 1390
 
 pub struct Adapter {
     pub handle: NDIS_HANDLE,
 
     local_socket_addr: SOCKADDR_IN6,
     remote_socket_addr: SOCKADDR_IN6,
+    pub remote_secret_key: Option<AesGcm>,
 
     pub socket: Option<UdpSocket>,
     request: SyncRequest,
@@ -106,6 +116,8 @@ impl Adapter {
         Lookaside::init(ptr::addr_of_mut!((*uninit).tx_ctx_pool), Self::TX_POOL_TAG)?;
 
         ptr::addr_of_mut!((*uninit).handle).write(handle);
+
+        ptr::addr_of_mut!((*uninit).remote_secret_key).write(None);
 
         SyncRequest::init(ptr::addr_of_mut!((*uninit).request));
         SyncRequest::init(ptr::addr_of_mut!((*uninit).tx_request));
@@ -167,6 +179,11 @@ impl Adapter {
 
     pub fn set_remote_endpoint(&mut self, endpoint: SOCKADDR_IN6) {
         self.remote_socket_addr = endpoint;
+    }
+
+    pub fn set_remote_secret_key(&mut self, secret_key: [u8; 16]) -> Result<()> {
+        let _secret_key = AesGcm::new(secret_key)?;
+        Ok(())
     }
 
     fn set_link_state(&self, connected: bool) {
@@ -256,9 +273,8 @@ impl Adapter {
             }
             let t1 = t();
             let mut wbl_queue = MaybeUninit::uninit();
-            unsafe { LinkedQueue::init(wbl_queue.as_mut_ptr()) };
+            unsafe { LinkedCountedQueue::init(wbl_queue.as_mut_ptr()) };
             let wbl_queue = unsafe { wbl_queue.assume_init_mut() };
-            let mut wbl_count = 0;
             let nbl_iter = unsafe { LinkedIter::new(nbl_chain) }; // r.a
             for nbl in nbl_iter {
                 let nb_iter = unsafe { LinkedIter::new(nbl.first_net_buffer) }; // r.a
@@ -270,7 +286,6 @@ impl Adapter {
                     wb.Offset = nb.current_mdl_offset;
                     wb.Length = nb.data_length as usize;
                     unsafe { wbl_queue.enqueue(wbl) };
-                    wbl_count += 1;
                 }
             }
             let wbl_chain = unsafe { wbl_queue.chain() };
@@ -297,6 +312,7 @@ impl Adapter {
                 //     wbl_chain,
                 //     &self.remote_socket_addr,
                 //     ctx.as_ptr().cast(),
+                let wbl_count = wbl_queue.count() as u64;
                 match socket.send_messages(&self.tx_request, wbl_chain, &self.remote_socket_addr) {
                     Err(_) => {
                         self.tx_errors.fetch_add(wbl_count as u64, Relaxed);
@@ -332,19 +348,34 @@ impl Drop for Adapter {
     }
 }
 
-struct Frame {
-    _data: [u8; MAX_FRAME_DATA_SIZE as usize],
+#[repr(C)]
+struct PlainFrame {
+    data: [u8; PLAIN_FRAME_DATA_SIZE as usize],
 }
 
+#[repr(C)]
+pub struct CipherFrameHeader {
+    pub nonce: [u8; 12],
+    pub tag: [u8; 16],
+}
+
+#[repr(C)]
+struct CipherFrame {
+    header: CipherFrameHeader,
+    data: [u8; CIPHER_FRAME_DATA_SIZE as usize],
+}
+
+#[repr(C)]
 struct MdlRepr {
     mdl: MDL,
-    _mdlx: [PFN_NUMBER; ADDRESS_AND_SIZE_TO_SPAN_PAGES(PAGE_SIZE - 1, mem::size_of::<Frame>())],
+    _mdlx:
+        [PFN_NUMBER; ADDRESS_AND_SIZE_TO_SPAN_PAGES(PAGE_SIZE - 1, mem::size_of::<PlainFrame>())],
 }
 
 impl MdlRepr {
-    unsafe fn init_non_paged(uninit: *mut Self, addr: *mut Frame) {
+    unsafe fn init_non_paged(uninit: *mut Self, addr: *mut PlainFrame) {
         let mdl = uninit.raw_get();
-        MmInitializeMdl(mdl, addr.cast(), mem::size_of::<Frame>());
+        MmInitializeMdl(mdl, addr.cast(), mem::size_of::<PlainFrame>());
         MmBuildMdlForNonPagedPool(mdl);
     }
 

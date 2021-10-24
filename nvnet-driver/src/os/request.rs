@@ -140,6 +140,7 @@ impl SyncRequest {
     }
 }
 
+#[repr(C)]
 struct IrpRepr<const N: usize> {
     irp: IRP,
     _irpx: [IO_STACK_LOCATION; N],

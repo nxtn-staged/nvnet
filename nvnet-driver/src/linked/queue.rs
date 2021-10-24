@@ -49,3 +49,29 @@ impl<T: Next> LinkedQueue<T> {
         head
     }
 }
+
+pub struct LinkedCountedQueue<T: Next> {
+    queue: LinkedQueue<T>,
+    count: usize,
+}
+
+impl<T: Next> LinkedCountedQueue<T> {
+    pub unsafe fn init<'a>(uninit: *mut Self) -> &'a mut Self {
+        LinkedQueue::init(ptr::addr_of_mut!((*uninit).queue));
+        ptr::addr_of_mut!((*uninit).count).write(0);
+        &mut *uninit
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub unsafe fn chain(&mut self) -> *mut T {
+        self.queue.head
+    }
+
+    pub unsafe fn enqueue(&mut self, node: *mut T) {
+        self.queue.enqueue(node);
+        self.count += 1;
+    }
+}

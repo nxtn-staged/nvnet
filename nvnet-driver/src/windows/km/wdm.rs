@@ -1,4 +1,4 @@
-use core::{ffi::c_void, mem, ptr};
+use core::{ffi::c_void, mem, ops::BitOr, ptr};
 
 use crate::windows::shared::{
     dpfilter::DPFLTR_TYPE,
@@ -145,6 +145,9 @@ c_type!(
     }
 );
 
+pub const MDL_MAPPED_TO_SYSTEM_VA: i16 = 0x0001;
+pub const MDL_SOURCE_IS_NONPAGED_POOL: i16 = 0x0004;
+
 // L18026
 c_type!(
     pub struct KEVENT {
@@ -210,6 +213,13 @@ extern "system" {
     // #[irql_requires_min(DISPATCH_LEVEL)]
     pub fn KeReleaseSpinLockFromDpcLevel(SpinLock: *mut KSPIN_LOCK);
 }
+
+// L23668
+c_type!(
+    pub enum MEMORY_CACHING_TYPE {
+        MmCached = 1, // TRUE
+    }
+);
 
 // L24055
 c_type!(
@@ -337,10 +347,43 @@ pub const fn ADDRESS_AND_SIZE_TO_SPAN_PAGES(Va: usize, Size: usize) -> usize {
     (BYTE_OFFSET(Va) + Size + (PAGE_SIZE - 1)) >> PAGE_SHIFT
 }
 
+pub unsafe fn MmGetMdlByteCount(Mdl: *const MDL) -> u32 {
+    (*Mdl).ByteCount
+}
+
 // L28296
 extern "system" {
     // #[irql_requires_max(DISPATCH_LEVEL)]
     pub fn MmBuildMdlForNonPagedPool(MemoryDescriptorList: *mut MDL);
+}
+
+// L28482
+c_type!(
+    pub enum MM_PAGE_PRIORITY {
+        LowPagePriority = 0,
+        MdlMappingNoExecute = 0x40000000,
+    }
+);
+
+impl BitOr for MM_PAGE_PRIORITY {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+extern "system" {
+    // #[irql_requires_max(DISPATCH_LEVEL)]
+    // ...
+    pub fn MmMapLockedPagesSpecifyCache(
+        MemoryDescriptorList: *mut MDL,
+        AccessMode: KPROCESSOR_MODE,
+        CacheType: MEMORY_CACHING_TYPE,
+        RequestedAddress: *mut c_void,
+        BugCheckOnFailure: u32,
+        Priority: MM_PAGE_PRIORITY,
+    ) -> *mut c_void;
 }
 
 // L28979
@@ -354,6 +397,26 @@ pub unsafe fn MmInitializeMdl(MemoryDescriptorList: *mut MDL, BaseVa: *mut c_voi
     (*MemoryDescriptorList).StartVa = PAGE_ALIGN(BaseVa);
     (*MemoryDescriptorList).ByteOffset = BYTE_OFFSET(BaseVa as usize) as u32;
     (*MemoryDescriptorList).ByteCount = Length as u32;
+}
+
+// L29023
+// #[irql_requires_max(DISPATCH_LEVEL)]
+pub unsafe fn MmGetSystemAddressForMdlSafe(
+    Mdl: *mut MDL,
+    Priority: MM_PAGE_PRIORITY,
+) -> *mut c_void {
+    if (*Mdl).MdlFlags & (MDL_MAPPED_TO_SYSTEM_VA | MDL_SOURCE_IS_NONPAGED_POOL) != 0 {
+        (*Mdl).MappedSystemVa
+    } else {
+        MmMapLockedPagesSpecifyCache(
+            Mdl,
+            KPROCESSOR_MODE::KernelMode,
+            MEMORY_CACHING_TYPE::MmCached,
+            ptr::null_mut(),
+            0, // FALSE
+            Priority,
+        )
+    }
 }
 
 // L29528

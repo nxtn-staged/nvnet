@@ -1,3 +1,4 @@
+pub mod bcrypt;
 pub mod dpfilter;
 pub mod guiddef;
 pub mod ifdef;

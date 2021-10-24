@@ -33,10 +33,10 @@ impl<T> Memory<T> {
         };
         let ptr =
             unsafe { ExAllocatePoolUninitialized(POOL_TYPE::NonPagedPool, layout.size(), tag) };
-        match NonNull::new(ptr) {
-            None => Err(STATUS_INSUFFICIENT_RESOURCES),
-            Some(ptr) => Ok(Self(ptr.cast())),
-        }
+        let ptr = NonNull::new(ptr)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+            .context_exit("ExAllocatePoolUninitialized")?;
+        Ok(Self(ptr.cast()))
     }
 
     pub fn as_ptr(&self) -> *mut T {
@@ -75,10 +75,10 @@ impl<T> Lookaside<T> {
 
     pub unsafe fn alloc(&self) -> Result<NonNull<T>> {
         let ptr = ExAllocateFromLookasideListEx(self.lookaside.get());
-        match NonNull::new(ptr) {
-            None => Err(STATUS_INSUFFICIENT_RESOURCES),
-            Some(ptr) => Ok(ptr.cast()),
-        }
+        let ptr = NonNull::new(ptr)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+            .context_exit("ExAllocateFromLookasideListEx")?;
+        Ok(ptr.cast())
     }
 
     pub unsafe fn dealloc(&self, entry: *mut T) {
