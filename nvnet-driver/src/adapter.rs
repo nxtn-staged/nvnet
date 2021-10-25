@@ -140,12 +140,8 @@ impl Adapter {
             Ok(())
         })();
         if let Err(status) = result {
-            loop {
-                let nbl = (*uninit).rx_queue.get_mut().dequeue();
-                if nbl.is_null() {
-                    break;
-                }
-                nbl_pool.dealloc(nbl);
+            while let Some(nbl) = (*uninit).rx_queue.get_mut().dequeue() {
+                nbl_pool.dealloc(nbl.as_ptr());
             }
             return Err(status);
         }
@@ -338,12 +334,8 @@ impl Adapter {
 
 impl Drop for Adapter {
     fn drop(&mut self) {
-        loop {
-            let nbl = self.rx_queue.get_mut().dequeue();
-            if nbl.is_null() {
-                break;
-            }
-            unsafe { self.rx_nbl_pool.dealloc(nbl) };
+        while let Some(nbl) = self.rx_queue.get_mut().dequeue() {
+            unsafe { self.rx_nbl_pool.dealloc(nbl.as_ptr()) };
         }
     }
 }

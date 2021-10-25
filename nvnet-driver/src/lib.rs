@@ -722,14 +722,14 @@ extern "system" fn evt_recv_from(
             continue;
         }
         let nbl = adapter.rx_queue.lock_fast(at_dispatch).dequeue();
-        let nbl = unsafe { nbl.as_mut() };
-        let nbl = match nbl {
+        let mut nbl = match nbl {
             None => {
                 discard(datagram);
                 continue;
             }
             Some(nbl) => nbl,
         };
+        let nbl = unsafe { nbl.as_mut() };
         if let Some(secret_key) = adapter.remote_secret_key.as_ref() {
             let mut header = MaybeUninit::<CipherFrameHeader>::uninit();
             let fragment_iter = unsafe { FragmentIter::from_wb(&datagram.Buffer) };

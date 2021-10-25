@@ -1,19 +1,27 @@
-use core::{default::default, ffi::c_void, mem, ptr};
+use core::{cell::UnsafeCell, default::default, ffi::c_void, mem, ptr};
 
 use crate::{
     debug::ResultExt,
     os::request::SyncRequest,
     windows::{
-        km::wsk::{
-            WskCaptureProviderNPI, WskDeregister, WskRegister, WskReleaseProviderNPI,
-            MAKE_WSK_VERSION, NPI_WSK_INTERFACE_ID, WSK_BUF_LIST, WSK_CLIENT_DATAGRAM_DISPATCH,
-            WSK_CLIENT_DISPATCH, WSK_CLIENT_NPI, WSK_CONTROL_SOCKET_TYPE, WSK_DATAGRAM_INDICATION,
-            WSK_EVENT_CALLBACK_CONTROL, WSK_EVENT_RECEIVE_FROM, WSK_FLAG_DATAGRAM_SOCKET,
-            WSK_INFINITE_WAIT, WSK_PROVIDER_BASIC_DISPATCH, WSK_PROVIDER_DATAGRAM_DISPATCH,
-            WSK_PROVIDER_NPI, WSK_REGISTRATION, WSK_SET_STATIC_EVENT_CALLBACKS, WSK_SOCKET,
+        km::{
+            wdm::{
+                IoInitializeIrp, IoReuseIrp, IoSetCompletionRoutine, DEVICE_OBJECT,
+                IO_STACK_LOCATION, IRP,
+            },
+            wsk::{
+                WskCaptureProviderNPI, WskDeregister, WskRegister, WskReleaseProviderNPI,
+                MAKE_WSK_VERSION, NPI_WSK_INTERFACE_ID, WSK_BUF_LIST, WSK_CLIENT_DATAGRAM_DISPATCH,
+                WSK_CLIENT_DISPATCH, WSK_CLIENT_NPI, WSK_CONTROL_SOCKET_TYPE,
+                WSK_DATAGRAM_INDICATION, WSK_EVENT_CALLBACK_CONTROL, WSK_EVENT_RECEIVE_FROM,
+                WSK_FLAG_DATAGRAM_SOCKET, WSK_INFINITE_WAIT, WSK_PROVIDER_BASIC_DISPATCH,
+                WSK_PROVIDER_DATAGRAM_DISPATCH, WSK_PROVIDER_NPI, WSK_REGISTRATION,
+                WSK_SET_STATIC_EVENT_CALLBACKS, WSK_SOCKET,
+            },
         },
         shared::{
             ntdef::NTSTATUS,
+            ntstatus::STATUS_SUCCESS,
             ws2def::{AF_INET6, IPPROTO, SOCK_DGRAM},
             ws2ipdef::{IPV6_V6ONLY, SOCKADDR_IN6},
         },
@@ -228,18 +236,18 @@ impl UdpSocket {
         Ok(request.info())
     }
 
-    //+
     pub fn send_messages_async(
         &self,
-        request: &SyncRequest,
+        request: &SocketRequest,
         buf_list: &mut WSK_BUF_LIST,
         addr: &SOCKADDR_IN6,
-        context: *mut c_void,
-    ) -> Result<usize> {
+        complete: extern "system" fn(*mut DEVICE_OBJECT, *mut IRP, *mut c_void) -> NTSTATUS,
+        complete_context: *mut c_void,
+    ) -> Result<()> {
         let dispatch = self.datagram_dispatch();
         let wsk_send_messages = unsafe { dispatch.WskSendMessages.unwrap_unchecked() };
         request
-            .invoke_async(context, |irp| {
+            .invoke_async(complete, complete_context, |irp| {
                 wsk_send_messages(
                     self.0,
                     buf_list,
@@ -251,9 +259,8 @@ impl UdpSocket {
                 )
             })
             .context_exit("WskSendMessages")?;
-        Ok(request.info())
+        Ok(())
     }
-    //-
 
     pub fn release(&self, datagram_indication: *mut WSK_DATAGRAM_INDICATION) -> Result<()> {
         let dispatch = self.datagram_dispatch();
@@ -271,5 +278,54 @@ impl UdpSocket {
             .invoke(|irp| wsk_close_socket(self.0, irp))
             .context_exit("WskCloseSocket")?;
         Ok(())
+    }
+}
+
+pub struct SocketRequest(UnsafeCell<IrpRepr<1>>);
+
+impl SocketRequest {
+    pub unsafe fn init<'a>(uninit: *mut Self) -> &'a mut Self {
+        IrpRepr::init(UnsafeCell::raw_get(ptr::addr_of!((*uninit).0)));
+        &mut *uninit
+    }
+
+    pub fn invoke_async(
+        &self,
+        complete: extern "system" fn(*mut DEVICE_OBJECT, *mut IRP, *mut c_void) -> NTSTATUS,
+        complete_context: *mut c_void,
+        invoke: impl FnOnce(*mut IRP) -> NTSTATUS,
+    ) -> Result<()> {
+        let irp = unsafe { self.0.get().raw_get() };
+        unsafe { IoReuseIrp(irp, STATUS_SUCCESS) };
+        unsafe { IoSetCompletionRoutine(irp, Some(complete), complete_context, true, true, true) };
+        invoke(irp).ok()
+    }
+
+    pub fn info(&self) -> Result<usize> {
+        let irp = unsafe { self.0.get().raw_get() };
+        unsafe {
+            (*irp)
+                .IoStatus
+                .Status
+                .ok()
+                .map(|()| (*irp).IoStatus.Information)
+        }
+    }
+}
+
+#[repr(C)]
+struct IrpRepr<const N: usize> {
+    irp: IRP,
+    _irpx: [IO_STACK_LOCATION; N],
+}
+
+impl<const N: usize> IrpRepr<N> {
+    unsafe fn init<'a>(uninit: *mut Self) -> &'a mut Self {
+        IoInitializeIrp(uninit.raw_get(), mem::size_of::<Self>() as u16, N as i8);
+        &mut *uninit
+    }
+
+    unsafe fn raw_get(self: *mut Self) -> *mut IRP {
+        ptr::addr_of_mut!((*self).irp)
     }
 }

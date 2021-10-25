@@ -79,46 +79,6 @@ impl SyncRequest {
         status.ok()
     }
 
-    //+
-    pub fn invoke_async(
-        &self,
-        context: *mut c_void,
-        invoke: impl FnOnce(*mut IRP) -> NTSTATUS,
-    ) -> Result<()> {
-        let irp = unsafe { self.irp.get().raw_get() };
-        unsafe { IoReuseIrp(irp, STATUS_SUCCESS) };
-        unsafe {
-            IoSetCompletionRoutine(irp, Some(Self::complete_async), context, true, true, true)
-        };
-        let status = invoke(irp);
-        // let status = if status != STATUS_PENDING {
-        //     status
-        // } else {
-        //     self.event.wait();
-        //     unsafe { (*irp).IoStatus.Status }
-        // };
-        status.ok()
-    }
-
-    extern "system" fn complete_async(
-        _device_object: *mut DEVICE_OBJECT,
-        _irp: *mut IRP,
-        context: *mut c_void,
-    ) -> NTSTATUS {
-        unsafe {
-            let ctx = context.cast::<(
-                crate::windows::shared::ndis::types::NDIS_HANDLE,
-                *mut crate::windows::km::ndis::nbl::NET_BUFFER_LIST,
-            )>();
-            let (handle, nbl) = *ctx;
-            crate::windows::km::ndis::NdisMSendNetBufferListsComplete(handle, nbl, 0);
-            crate::windows::km::ntddk::ExFreePool(_irp as _);
-            crate::windows::km::ntddk::ExFreePool(context as _);
-        }
-        STATUS_MORE_PROCESSING_REQUIRED
-    }
-    //-
-
     pub fn info(&self) -> usize {
         let irp = unsafe { self.irp.get().raw_get() };
         unsafe { (*irp).IoStatus.Information }

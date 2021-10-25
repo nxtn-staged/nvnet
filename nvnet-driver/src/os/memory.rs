@@ -50,7 +50,6 @@ impl<T> Drop for Memory<T> {
     }
 }
 
-#[repr(transparent)]
 pub struct Lookaside<T> {
     lookaside: UnsafeCell<LOOKASIDE_LIST_EX>,
     marker: PhantomData<T>,

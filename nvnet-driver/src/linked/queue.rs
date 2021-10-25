@@ -1,16 +1,16 @@
-use core::ptr;
+use core::ptr::{self, NonNull};
 
 use crate::linked::Next;
 
 pub struct LinkedQueue<T: Next> {
     head: *mut T,
-    tail: *mut *mut T,
+    tail: NonNull<*mut T>,
 }
 
 impl<T: Next> LinkedQueue<T> {
     pub unsafe fn init<'a>(uninit: *mut Self) -> &'a mut Self {
         ptr::addr_of_mut!((*uninit).head).write(ptr::null_mut());
-        ptr::addr_of_mut!((*uninit).tail).write(&mut (*uninit).head);
+        ptr::addr_of_mut!((*uninit).tail).write((&mut (*uninit).head).into());
         &mut *uninit
     }
 
@@ -24,23 +24,23 @@ impl<T: Next> LinkedQueue<T> {
 
     pub unsafe fn enqueue_fast(&mut self, head: *mut T, tail: *mut T) {
         debug_assert!((*tail).next().is_null());
-        *self.tail = head;
-        self.tail = (*tail).next_mut();
+        *self.tail.as_mut() = head;
+        self.tail = (*tail).next_mut().into();
     }
 
-    pub fn dequeue(&mut self) -> *mut T {
-        if self.head.is_null() {
-            ptr::null_mut()
-        } else if self.tail == unsafe { (*self.head).next_mut() } {
-            let head = self.head;
-            unsafe { Self::init(self) };
-            head
-        } else {
-            let head = self.head;
-            self.head = unsafe { (*head).next() };
-            unsafe { *(*head).next_mut() = ptr::null_mut() };
-            head
+    pub fn dequeue(&mut self) -> Option<NonNull<T>> {
+        let head = NonNull::new(self.head);
+        if let Some(mut head) = head {
+            unsafe {
+                if self.tail == head.as_mut().next_mut().into() {
+                    Self::init(self);
+                } else {
+                    self.head = head.as_ref().next();
+                    *head.as_mut().next_mut() = ptr::null_mut();
+                }
+            }
         }
+        head
     }
 
     pub fn dequeue_all(&mut self) -> *mut T {
